@@ -30,55 +30,68 @@ from engine.path_integration import (
 )
 from api.weather_service import fetch_current_wind
 from api.pollen_service import fetch_pollen_forecast, get_current_upi, upi_to_clinical_level
-from data.campus_data import CAMPUS_TREES, CAMPUS_BUILDINGS, STUDENT_PATHS, CAMPUS_BOUNDARY
+from data.campus_data import get_campus, CAMPUSES, DEFAULT_CAMPUS
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 CORS(app)
 
-# Grid configuration: covers the FULL map area
-# Map bounds: N=37.4038, S=37.3988, W=-122.1372, E=-122.1300
-# That's ~557m N-S, ~637m E-W from the campus center at 37.4013, -122.1336
+# Grid configuration: covers the FULL map area for each campus.
 GRID_SIZE = 120
 GRID_EXTENT_X = 320.0  # meters E-W from center
 GRID_EXTENT_Y = 280.0  # meters N-S from center
-x_lin = np.linspace(-GRID_EXTENT_X, GRID_EXTENT_X, GRID_SIZE)
-y_lin = np.linspace(-GRID_EXTENT_Y, GRID_EXTENT_Y, GRID_SIZE)
-GRID_X, GRID_Y = np.meshgrid(x_lin, y_lin)
+_x_lin = np.linspace(-GRID_EXTENT_X, GRID_EXTENT_X, GRID_SIZE)
+_y_lin = np.linspace(-GRID_EXTENT_Y, GRID_EXTENT_Y, GRID_SIZE)
+GRID_X, GRID_Y = np.meshgrid(_x_lin, _y_lin)
 
 # Fixed scale: peak spring concentration (April with all oaks active)
 # This ensures summer shows as low relative to spring peak
 FIXED_MAX_CONCENTRATION = 500.0  # grains/m³ (spring peak reference)
 
+# Meters per degree latitude (approx constant)
+METERS_PER_DEG_LAT = 111320.0
 
-def compute_concentration_field(wind_data: dict, current_day: int) -> np.ndarray:
-    """Run the full dispersion simulation using detected trees."""
-    import json as jsonlib
-    cache_path = os.path.join(os.path.dirname(__file__), 'static', 'detect_cache.json')
-    mask_path = os.path.join(os.path.dirname(__file__), 'static', 'building_mask.npy')
 
-    # Use detected trees if available
+def resolve_campus():
+    """Read the ?campus= query param and return the campus record."""
+    return get_campus(request.args.get("campus", DEFAULT_CAMPUS))
+
+
+def campus_static_path(campus_key: str, filename: str) -> str:
+    """Path to a per-campus static file, falling back to the legacy top-level file."""
+    base = os.path.dirname(__file__)
+    campus_path = os.path.join(base, 'static', campus_key, filename)
+    if os.path.exists(campus_path):
+        return campus_path
+    return os.path.join(base, 'static', filename)
+
+
+def compute_concentration_field(campus: dict, wind_data: dict, current_day: int) -> np.ndarray:
+    """Run the full dispersion simulation for a campus using detected trees."""
+    center_lat = campus["center_lat"]
+    center_lon = campus["center_lon"]
+    mplat = METERS_PER_DEG_LAT
+    mplon = 111320.0 * np.cos(np.radians(center_lat))
+
+    cache_path = campus_static_path(campus["key"], 'detect_cache.json')
+    mask_path = campus_static_path(campus["key"], 'building_mask.npy')
+
+    # Use detected trees if available; otherwise fall back to the campus flora set
     detected_trees = []
     if os.path.exists(cache_path):
         with open(cache_path) as f:
-            detect_data = jsonlib.load(f)
+            detect_data = json.load(f)
             detected_trees = detect_data.get("trees", [])
 
     if detected_trees:
-        # Build flora matrix from detected trees
-        from engine.phenology import BOTANICAL_CATALOG
-        from data.campus_data import CAMPUS_CENTER_LAT, CAMPUS_CENTER_LON, METERS_PER_DEG_LAT, METERS_PER_DEG_LON
-        
         tree_locations = []
         for dt in detected_trees:
             species_key = dt.get("species_key", "coast_live_oak")
-            # Convert lat/lng to local meters
-            x = (dt["lng"] - CAMPUS_CENTER_LON) * METERS_PER_DEG_LON
-            y = (dt["lat"] - CAMPUS_CENTER_LAT) * METERS_PER_DEG_LAT
+            x = (dt["lng"] - center_lon) * mplon
+            y = (dt["lat"] - center_lat) * mplat
             tree_locations.append({"x": x, "y": y, "species_key": species_key})
-        
         flora_matrix = build_flora_matrix(tree_locations, current_day)
     else:
-        flora_matrix = build_flora_matrix(CAMPUS_TREES, current_day)
+        flora_matrix = build_flora_matrix(campus["trees"], current_day)
 
     if flora_matrix.shape[0] == 0:
         return np.zeros_like(GRID_X)
@@ -86,7 +99,7 @@ def compute_concentration_field(wind_data: dict, current_day: int) -> np.ndarray
     buildings = [
         {"x": b["local_x"], "y": b["local_y"],
          "width": b["width"], "height": b["height"], "length": b["length"]}
-        for b in CAMPUS_BUILDINGS
+        for b in campus["buildings"]
     ]
 
     concentration = superpose_sources(
@@ -100,7 +113,6 @@ def compute_concentration_field(wind_data: dict, current_day: int) -> np.ndarray
     )
 
     # Zero out concentration over building rooftops
-    # At 1.5m inside a building, there's no airborne pollen exposure
     if os.path.exists(mask_path):
         building_mask = np.load(mask_path)
         if building_mask.shape == concentration.shape:
@@ -114,9 +126,31 @@ def health():
     return jsonify({"status": "ok", "service": "CAM Backend"})
 
 
+@app.route("/api/campuses", methods=["GET"])
+def list_campuses():
+    """List available campuses with their display metadata and map config."""
+    out = []
+    for key, c in CAMPUSES.items():
+        out.append({
+            "key": key,
+            "name": c["name"],
+            "subtitle": c["subtitle"],
+            "center_lat": c["center_lat"],
+            "center_lon": c["center_lon"],
+            "bounds": c["bounds"],
+            "boundary": [{"lat": pt[0], "lng": pt[1]} for pt in c["boundary"]],
+        })
+    return jsonify({"campuses": out, "default": DEFAULT_CAMPUS})
+
+
 @app.route("/api/static/<path:filename>", methods=["GET"])
 def serve_static(filename):
+    """Serve a per-campus static file (e.g. satellite.png). Use ?campus=."""
     from flask import send_from_directory
+    campus_key = get_campus(request.args.get("campus", DEFAULT_CAMPUS))["key"]
+    campus_dir = os.path.join(os.path.dirname(__file__), 'static', campus_key)
+    if os.path.exists(os.path.join(campus_dir, filename)):
+        return send_from_directory(campus_dir, filename)
     return send_from_directory('static', filename)
 
 
@@ -126,10 +160,11 @@ def get_concentration():
     Get current pollen concentration grid.
     Query params: day (optional, Julian day override)
     """
+    campus = resolve_campus()
     current_day = request.args.get("day", day_of_year(), type=int)
-    wind_data = fetch_current_wind()
+    wind_data = fetch_current_wind(campus["center_lat"], campus["center_lon"])
 
-    concentration = compute_concentration_field(wind_data, current_day)
+    concentration = compute_concentration_field(campus, wind_data, current_day)
 
     # Downsample for JSON transfer (every 4th point)
     step = max(1, GRID_SIZE // 25)
@@ -156,13 +191,13 @@ def get_heatmap():
     Returns lat/lng weighted points for Google Maps HeatmapLayer.
     """
     current_day = request.args.get("day", day_of_year(), type=int)
-    wind_data = fetch_current_wind()
-    concentration = compute_concentration_field(wind_data, current_day)
+    campus = resolve_campus()
+    wind_data = fetch_current_wind(campus["center_lat"], campus["center_lon"])
+    concentration = compute_concentration_field(campus, wind_data, current_day)
 
-    # Campus center in lat/lng (Gunn High School)
-    center_lat = 37.4013
-    center_lon = -122.1336
-    meters_per_deg_lat = 111320.0
+    center_lat = campus["center_lat"]
+    center_lon = campus["center_lon"]
+    meters_per_deg_lat = METERS_PER_DEG_LAT
     meters_per_deg_lon = 111320.0 * np.cos(np.radians(center_lat))
 
     heatmap_points = []
@@ -196,20 +231,21 @@ def get_heatmap():
 
 @app.route("/api/flora", methods=["GET"])
 def get_flora():
-    """Get all campus flora with current emission status."""
+    """Get all campus flora with current emission status. Query param: campus"""
+    campus = resolve_campus()
     current_day = request.args.get("day", day_of_year(), type=int)
     active = get_active_species(current_day)
     active_keys = {s["species_key"] for s in active}
 
     flora_data = []
-    for tree in CAMPUS_TREES:
+    for tree in campus["trees"]:
         profile = BOTANICAL_CATALOG.get(tree["species_key"], {})
         is_active = tree["species_key"] in active_keys
         flora_data.append({
             "x": tree["x"],
             "y": tree["y"],
-            "lat": tree.get("lat", 37.4027),
-            "lng": tree.get("lng", -122.1342),
+            "lat": tree.get("lat", campus["center_lat"]),
+            "lng": tree.get("lng", campus["center_lon"]),
             "species_key": tree["species_key"],
             "common_name": profile.get("common_name", "Unknown"),
             "scientific_name": profile.get("scientific_name", ""),
@@ -224,72 +260,82 @@ def get_flora():
 
 @app.route("/api/buildings", methods=["GET"])
 def get_buildings():
-    """Get campus building data for wake visualization."""
-    return jsonify({"buildings": CAMPUS_BUILDINGS})
+    """Get campus building data for wake visualization. Query param: campus"""
+    campus = resolve_campus()
+    return jsonify({"buildings": campus["buildings"]})
 
 
 @app.route("/api/boundary", methods=["GET"])
 def get_boundary():
-    """Get campus boundary polygon."""
-    return jsonify({"boundary": [{"lat": pt[0], "lng": pt[1]} for pt in CAMPUS_BOUNDARY]})
+    """Get campus boundary polygon. Query param: campus"""
+    campus = resolve_campus()
+    return jsonify({"boundary": [{"lat": pt[0], "lng": pt[1]} for pt in campus["boundary"]]})
 
 
 @app.route("/api/detect", methods=["GET"])
 def detect_features():
-    """Run satellite image detection to find buildings and trees. Results are cached."""
-    import json as jsonlib
-    cache_path = os.path.join(os.path.dirname(__file__), 'static', 'detect_cache.json')
+    """Return cached tree/building detection for the campus. Query param: campus"""
+    campus = resolve_campus()
+    cache_path = campus_static_path(campus["key"], 'detect_cache.json')
 
     if os.path.exists(cache_path):
         with open(cache_path) as f:
-            return jsonify(jsonlib.load(f))
+            return jsonify(json.load(f))
 
-    from engine.detect import run_detection
-    results = run_detection()
-
-    with open(cache_path, 'w') as f:
-        jsonlib.dump(results, f)
-
-    return jsonify(results)
+    # No cache: try live detection (requires Pillow/scikit-image). We ship a
+    # pre-generated cache so this path is not normally hit in production.
+    try:
+        from engine.detect import run_detection
+        results = run_detection(bounds=campus["bounds"], use_position_classifier=(campus["key"] == "gunn"))
+        campus_dir = os.path.join(os.path.dirname(__file__), 'static', campus["key"])
+        os.makedirs(campus_dir, exist_ok=True)
+        with open(os.path.join(campus_dir, 'detect_cache.json'), 'w') as f:
+            json.dump(results, f)
+        return jsonify(results)
+    except Exception as e:
+        return jsonify({"trees": [], "buildings": [], "error": str(e)})
 
 
 @app.route("/api/detect/update", methods=["POST"])
 def update_detection():
-    """Update cached detection results (e.g. after user deletes false positives)."""
-    import json as jsonlib
-    cache_path = os.path.join(os.path.dirname(__file__), 'static', 'detect_cache.json')
+    """Update cached detection results. Query param: campus"""
+    campus = resolve_campus()
+    campus_dir = os.path.join(os.path.dirname(__file__), 'static', campus["key"])
+    os.makedirs(campus_dir, exist_ok=True)
+    cache_path = os.path.join(campus_dir, 'detect_cache.json')
 
     body = request.get_json()
     if not body or "trees" not in body:
         return jsonify({"error": "Must include 'trees' array"}), 400
 
-    # Load existing cache and update trees
     data = {"trees": body["trees"], "buildings": [], "image_size": [1398, 1600]}
     if os.path.exists(cache_path):
         with open(cache_path) as f:
-            existing = jsonlib.load(f)
+            existing = json.load(f)
             data["buildings"] = existing.get("buildings", [])
             data["image_size"] = existing.get("image_size", [1398, 1600])
 
     data["trees"] = body["trees"]
 
     with open(cache_path, 'w') as f:
-        jsonlib.dump(data, f)
+        json.dump(data, f)
 
     return jsonify({"status": "ok", "trees_count": len(data["trees"])})
 
 
 @app.route("/api/weather", methods=["GET"])
 def get_weather():
-    """Get current weather conditions."""
-    return jsonify(fetch_current_wind())
+    """Get current weather conditions. Query param: campus"""
+    campus = resolve_campus()
+    return jsonify(fetch_current_wind(campus["center_lat"], campus["center_lon"]))
 
 
 @app.route("/api/pollen-forecast", methods=["GET"])
 def get_pollen_forecast():
-    """Get regional pollen forecast with clinical mappings."""
+    """Get regional pollen forecast with clinical mappings. Query param: campus"""
+    campus = resolve_campus()
     days = request.args.get("days", 5, type=int)
-    forecasts = fetch_pollen_forecast(days=days)
+    forecasts = fetch_pollen_forecast(days=days, lat=campus["center_lat"], lon=campus["center_lon"])
 
     enriched = []
     for f in forecasts:
@@ -306,15 +352,16 @@ def calculate_path_exposure():
     Calculate exposure dose along a student walking path.
     Body: { "path": [[x1,y1], [x2,y2], ...] }
     """
+    campus = resolve_campus()
     body = request.get_json()
     if not body or "path" not in body:
         return jsonify({"error": "Request body must include 'path' array"}), 400
 
     path_points = [tuple(p) for p in body["path"]]
     current_day = body.get("day", day_of_year())
-    wind_data = fetch_current_wind()
+    wind_data = fetch_current_wind(campus["center_lat"], campus["center_lon"])
 
-    concentration = compute_concentration_field(wind_data, current_day)
+    concentration = compute_concentration_field(campus, wind_data, current_day)
     result = path_exposure_dose(path_points, concentration, GRID_X, GRID_Y)
     result["wind"] = wind_data
     result["current_day"] = current_day
@@ -328,6 +375,7 @@ def get_optimal_route():
     Find lowest-exposure path between two points.
     Body: { "start": [x, y], "end": [x, y] }
     """
+    campus = resolve_campus()
     body = request.get_json()
     if not body or "start" not in body or "end" not in body:
         return jsonify({"error": "Body must include 'start' and 'end'"}), 400
@@ -335,9 +383,9 @@ def get_optimal_route():
     start = tuple(body["start"])
     end = tuple(body["end"])
     current_day = body.get("day", day_of_year())
-    wind_data = fetch_current_wind()
+    wind_data = fetch_current_wind(campus["center_lat"], campus["center_lon"])
 
-    concentration = compute_concentration_field(wind_data, current_day)
+    concentration = compute_concentration_field(campus, wind_data, current_day)
 
     direct_path = [start, end]
     direct_dose = path_exposure_dose(direct_path, concentration, GRID_X, GRID_Y)
@@ -367,19 +415,20 @@ def get_advisory():
     Get pre-commute clinical advisory for current conditions.
     Returns personalized risk assessment and routing recommendations.
     """
+    campus = resolve_campus()
     current_day = day_of_year()
-    wind_data = fetch_current_wind()
-    pollen_upi = get_current_upi()
+    wind_data = fetch_current_wind(campus["center_lat"], campus["center_lon"])
+    pollen_upi = get_current_upi(campus["center_lat"], campus["center_lon"])
     active = get_active_species(current_day)
 
     max_upi = max(pollen_upi.get("tree_upi", 0), pollen_upi.get("grass_upi", 0), pollen_upi.get("weed_upi", 0))
     clinical = upi_to_clinical_level(max_upi)
 
-    concentration = compute_concentration_field(wind_data, current_day)
+    concentration = compute_concentration_field(campus, wind_data, current_day)
 
     # Evaluate all standard paths
     path_advisories = []
-    for sp in STUDENT_PATHS:
+    for sp in campus["paths"]:
         waypoints = [(w["x"], w["y"]) for w in sp["waypoints"]]
         dose = path_exposure_dose(waypoints, concentration, GRID_X, GRID_Y)
         path_advisories.append({

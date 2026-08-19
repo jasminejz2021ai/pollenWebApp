@@ -1,16 +1,35 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { usePollenData } from './hooks/usePollenData';
 import Header from './components/Header';
 import CampusMap from './components/CampusMap';
 import AdvisoryBanner from './components/AdvisoryBanner';
 import SidePanel from './components/SidePanel';
 import TreeInfoCard from './components/TreeInfoCard';
-import type { FloraItem } from './utils/api';
+import { fetchCampuses } from './utils/api';
+import type { FloraItem, Campus } from './utils/api';
 
 export default function App() {
-  const data = usePollenData();
+  const [campuses, setCampuses] = useState<Campus[]>([]);
+  const [campusKey, setCampusKey] = useState<string>('gunn');
+  const data = usePollenData(campusKey);
   const [selectedTree, setSelectedTree] = useState<FloraItem | null>(null);
   const [showPanel, setShowPanel] = useState(true);
+
+  useEffect(() => {
+    fetchCampuses()
+      .then((res) => {
+        setCampuses(res.campuses);
+        if (res.default) setCampusKey(res.default);
+      })
+      .catch(() => {});
+  }, []);
+
+  const activeCampus = campuses.find((c) => c.key === campusKey) || null;
+
+  // Reset any selected tree when switching campuses
+  useEffect(() => {
+    setSelectedTree(null);
+  }, [campusKey]);
 
   if (data.loading) {
     return (
@@ -44,7 +63,13 @@ export default function App() {
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
-      <Header weather={data.weather} activeSpecies={data.activeSpecies} />
+      <Header
+        weather={data.weather}
+        activeSpecies={data.activeSpecies}
+        campuses={campuses}
+        campusKey={campusKey}
+        onCampusChange={setCampusKey}
+      />
 
       {data.advisory?.advisory_message && (
         <AdvisoryBanner advisory={data.advisory} />
@@ -53,9 +78,11 @@ export default function App() {
       <div className="flex-1 flex overflow-hidden" style={{ height: 'calc(100vh - 60px)' }}>
         <div className="flex-1 relative h-full">
           <CampusMap
+            key={campusKey}
             heatmap={data.heatmap}
             flora={data.flora}
             buildings={data.buildings}
+            campus={activeCampus}
             onTreeSelect={setSelectedTree}
           />
 

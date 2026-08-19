@@ -15,11 +15,17 @@ CAMPUS_LAT = 37.4027
 CAMPUS_LON = -122.1342
 
 
-def fetch_current_wind(api_key: Optional[str] = None) -> Dict:
+def fetch_current_wind(lat: Optional[float] = None, lon: Optional[float] = None,
+                       api_key: Optional[str] = None) -> Dict:
     """
-    Fetch current wind conditions from OpenWeatherMap for campus location.
-    Returns dict with speed, direction, u, v components, and stability class.
+    Fetch current wind conditions from OpenWeatherMap for a location.
+    Defaults to Gunn's coordinates. Returns dict with speed, direction, u, v
+    components, and stability class.
     """
+    if lat is None:
+        lat = CAMPUS_LAT
+    if lon is None:
+        lon = CAMPUS_LON
     if api_key is None:
         api_key = os.environ.get("OPENWEATHER_API_KEY", "")
 
@@ -28,8 +34,8 @@ def fetch_current_wind(api_key: Optional[str] = None) -> Dict:
 
     url = "https://api.openweathermap.org/data/2.5/weather"
     params = {
-        "lat": CAMPUS_LAT,
-        "lon": CAMPUS_LON,
+        "lat": lat,
+        "lon": lon,
         "appid": api_key,
         "units": "metric",
     }

@@ -1,67 +1,92 @@
 """
 Campus AeroAllergen Mapping (CAM) - Campus Data
 
-Gunn High School (780 Arastradero Rd, Palo Alto, CA 94306)
-Center: 37.4027°N, 122.1342°W
+Multi-campus registry. Each campus defines its center, satellite-image bounds,
+boundary polygon, trees, buildings, and student paths. Access a campus via
+get_campus(key); the default campus is "gunn".
+
+Campuses:
+- gunn: Gunn High School (780 Arastradero Rd, Palo Alto) - center 37.4027, -122.1342
+- stanford: Stanford Main Quad - center ~37.4275, -122.1697
 
 Tree positions placed by matching visible canopy on satellite imagery.
-Building positions from Gunn Site Map 2025-26.
-Boundary traced from property outline.
+Building positions from site maps. Boundaries traced from property outlines.
 """
 
+import math
 import numpy as np
 from typing import Tuple, List
 
-CAMPUS_CENTER_LAT = 37.4027
-CAMPUS_CENTER_LON = -122.1342
-METERS_PER_DEG_LAT = 111320.0
-METERS_PER_DEG_LON = 111320.0 * np.cos(np.radians(CAMPUS_CENTER_LAT))
+
+def _meters_per_deg_lon(lat: float) -> float:
+    return 111320.0 * math.cos(math.radians(lat))
 
 
-def local_to_latlng(x: float, y: float) -> Tuple[float, float]:
-    """Convert local meter coordinates (origin=campus center) to lat/lng."""
-    lat = CAMPUS_CENTER_LAT + y / METERS_PER_DEG_LAT
-    lng = CAMPUS_CENTER_LON + x / METERS_PER_DEG_LON
-    return round(lat, 7), round(lng, 7)
+def _make_local_to_latlng(center_lat: float, center_lon: float):
+    """Return a local-meters -> lat/lng converter for a given campus center."""
+    mplat = 111320.0
+    mplon = _meters_per_deg_lon(center_lat)
+
+    def local_to_latlng(x: float, y: float) -> Tuple[float, float]:
+        lat = center_lat + y / mplat
+        lng = center_lon + x / mplon
+        return round(lat, 7), round(lng, 7)
+
+    return local_to_latlng
 
 
-def _tree(x: float, y: float, species_key: str) -> dict:
-    lat, lng = local_to_latlng(x, y)
-    return {"x": x, "y": y, "species_key": species_key, "lat": lat, "lng": lng}
-
-
-# ============================================================
-# CAMPUS BOUNDARY - Rectangle rotated 25° to align with Arastradero Rd
-# Arastradero runs ENE-WSW at roughly 25° from east
-# ============================================================
 def _rotate_point(cx, cy, x, y, angle_deg):
-    """Rotate point (x,y) around (cx,cy) by angle_deg."""
-    import math
+    """Rotate point (x,y) around (cx,cy) by angle_deg. Returns (lat, lng)."""
     rad = math.radians(angle_deg)
     dx, dy = x - cx, y - cy
     rx = dx * math.cos(rad) - dy * math.sin(rad)
     ry = dx * math.sin(rad) + dy * math.cos(rad)
     return (round(cy + ry, 6), round(cx + rx, 6))
 
-_center_lat = 37.4018
-_center_lng = -122.1338
-_half_w = 0.0032  # half-width in lng degrees
-_half_h = 0.0022  # half-height in lat degrees
-_angle = 25  # degrees counterclockwise to match Arastradero tilt
 
-# Build rotated rectangle corners
-_corners_unrotated = [
-    (_center_lng - _half_w, _center_lat - _half_h),
-    (_center_lng + _half_w, _center_lat - _half_h),
-    (_center_lng + _half_w, _center_lat + _half_h),
-    (_center_lng - _half_w, _center_lat + _half_h),
-]
+def _rotated_rect_boundary(center_lat, center_lng, half_w, half_h, angle):
+    """Build a closed rotated-rectangle boundary polygon as [(lat, lng), ...]."""
+    corners_unrotated = [
+        (center_lng - half_w, center_lat - half_h),
+        (center_lng + half_w, center_lat - half_h),
+        (center_lng + half_w, center_lat + half_h),
+        (center_lng - half_w, center_lat + half_h),
+    ]
+    boundary: List[Tuple[float, float]] = []
+    for (lng, lat) in corners_unrotated:
+        rlat, rlng = _rotate_point(center_lng, center_lat, lng, lat, angle)
+        boundary.append((rlat, rlng))
+    boundary.append(boundary[0])
+    return boundary
 
-CAMPUS_BOUNDARY: List[Tuple[float, float]] = []
-for (lng, lat) in _corners_unrotated:
-    rlat, rlng = _rotate_point(_center_lng, _center_lat, lng, lat, _angle)
-    CAMPUS_BOUNDARY.append((rlat, rlng))
-CAMPUS_BOUNDARY.append(CAMPUS_BOUNDARY[0])  # close polygon
+
+# ============================================================
+# GUNN HIGH SCHOOL
+# ============================================================
+GUNN_CENTER_LAT = 37.4027
+GUNN_CENTER_LON = -122.1342
+_gunn_local = _make_local_to_latlng(GUNN_CENTER_LAT, GUNN_CENTER_LON)
+
+
+def local_to_latlng(x: float, y: float) -> Tuple[float, float]:
+    """Backward-compatible Gunn local->lat/lng converter."""
+    return _gunn_local(x, y)
+
+
+def _tree(x: float, y: float, species_key: str) -> dict:
+    lat, lng = _gunn_local(x, y)
+    return {"x": x, "y": y, "species_key": species_key, "lat": lat, "lng": lng}
+
+
+# Gunn boundary: rectangle rotated 25 deg to align with Arastradero Rd
+GUNN_BOUNDARY = _rotated_rect_boundary(37.4018, -122.1338, 0.0032, 0.0022, 25)
+
+# Backward-compatible aliases (default campus = Gunn)
+CAMPUS_BOUNDARY = GUNN_BOUNDARY
+CAMPUS_CENTER_LAT = GUNN_CENTER_LAT
+CAMPUS_CENTER_LON = GUNN_CENTER_LON
+METERS_PER_DEG_LAT = 111320.0
+METERS_PER_DEG_LON = _meters_per_deg_lon(GUNN_CENTER_LAT)
 
 # ============================================================
 # CAMPUS TREES - Placed by matching satellite canopy
@@ -75,7 +100,7 @@ CAMPUS_BOUNDARY.append(CAMPUS_BOUNDARY[0])  # close polygon
 # 6. Scattered between E-side buildings - oaks, elms
 # 7. Courtyard trees between classroom wings
 
-CAMPUS_TREES = [
+CAMPUS_TREES = GUNN_TREES = [
     # === ARASTRADERO ROAD FRONTAGE (North border) - Dense tree line ===
     # Large visible canopy along the entire north edge
     _tree(-110, 80, "valley_oak"),
@@ -254,7 +279,7 @@ CAMPUS_TREES = [
 # Athletic fields are south of y = -50 (no buildings there).
 # Buildings are smaller than you'd think; dimensions are reduced for accuracy.
 # ============================================================
-CAMPUS_BUILDINGS = [
+CAMPUS_BUILDINGS = GUNN_BUILDINGS = [
     {"building_id": "a_building", "name": "A-Bldg",
      "height": 12.0, "width": 20.0, "length": 35.0, "local_x": 55.0, "local_y": 50.0,
      "aerodynamic_fraction": 0.6,
@@ -308,7 +333,7 @@ CAMPUS_BUILDINGS = [
 # ============================================================
 # STUDENT PATHS
 # ============================================================
-STUDENT_PATHS = [
+STUDENT_PATHS = GUNN_PATHS = [
     {"name": "P-Building to Titan Gym",
      "waypoints": [{"x": -15, "y": -30}, {"x": 0, "y": -35}, {"x": 15, "y": -40}, {"x": 30, "y": -45}]},
     {"name": "A-Building to Athletic Fields",
@@ -320,3 +345,174 @@ STUDENT_PATHS = [
     {"name": "N-Building to D-Library",
      "waypoints": [{"x": 0, "y": 15}, {"x": 20, "y": 12}, {"x": 40, "y": 10}, {"x": 55, "y": 8}, {"x": 70, "y": 5}]},
 ]
+
+
+# ============================================================
+# STANFORD - MAIN QUAD
+# Center on the Main Quad / Memorial Court area.
+# ============================================================
+STANFORD_CENTER_LAT = 37.4275
+STANFORD_CENTER_LON = -122.1697
+_stanford_local = _make_local_to_latlng(STANFORD_CENTER_LAT, STANFORD_CENTER_LON)
+
+
+def _stree(x: float, y: float, species_key: str) -> dict:
+    lat, lng = _stanford_local(x, y)
+    return {"x": x, "y": y, "species_key": species_key, "lat": lat, "lng": lng}
+
+
+# Satellite-image bounds for Stanford (about 640m E-W x 560m N-S, matching Gunn's
+# scale so the dispersion grid extent stays valid).
+STANFORD_BOUNDS = {
+    "north": STANFORD_CENTER_LAT + 0.00252,
+    "south": STANFORD_CENTER_LAT - 0.00252,
+    "east": STANFORD_CENTER_LON + 0.00363,
+    "west": STANFORD_CENTER_LON - 0.00363,
+}
+
+# Boundary: axis-aligned rectangle around the Main Quad (no rotation).
+STANFORD_BOUNDARY = _rotated_rect_boundary(
+    STANFORD_CENTER_LAT, STANFORD_CENTER_LON, 0.0030, 0.0021, 0
+)
+
+# Fallback flora for Stanford Main Quad. Real per-tree data is produced by
+# satellite detection at runtime; this set keeps the dispersion model meaningful
+# before/without detection. Notable: the Palm Drive Canary Island date palms,
+# coast live oaks around the Oval, and mixed canopy around the Quad.
+STANFORD_TREES = [
+    # Palm Drive approach (north, running toward Memorial Court)
+    _stree(-6, 210, "palm"),
+    _stree(6, 210, "palm"),
+    _stree(-6, 190, "palm"),
+    _stree(6, 190, "palm"),
+    _stree(-6, 170, "palm"),
+    _stree(6, 170, "palm"),
+    _stree(-6, 150, "palm"),
+    _stree(6, 150, "palm"),
+
+    # The Oval (north entrance lawn) - ring of coast live oaks
+    _stree(-45, 175, "coast_live_oak"),
+    _stree(45, 175, "coast_live_oak"),
+    _stree(-55, 150, "coast_live_oak"),
+    _stree(55, 150, "coast_live_oak"),
+    _stree(-40, 130, "valley_oak"),
+    _stree(40, 130, "valley_oak"),
+
+    # Memorial Court / around the Quad (central)
+    _stree(-70, 40, "coast_live_oak"),
+    _stree(70, 40, "coast_live_oak"),
+    _stree(-80, 10, "valley_oak"),
+    _stree(80, 10, "valley_oak"),
+    _stree(-75, -25, "coast_live_oak"),
+    _stree(75, -25, "coast_live_oak"),
+    _stree(-60, -55, "redwood"),
+    _stree(60, -55, "redwood"),
+
+    # Redwood/eucalyptus clusters flanking the Quad (west/east edges)
+    _stree(-140, 60, "redwood"),
+    _stree(-145, 20, "redwood"),
+    _stree(-150, -20, "redwood"),
+    _stree(140, 60, "eucalyptus"),
+    _stree(145, 20, "eucalyptus"),
+    _stree(150, -20, "eucalyptus"),
+
+    # South of the Quad toward the science area - oaks and elms
+    _stree(-30, -90, "coast_live_oak"),
+    _stree(30, -90, "coast_live_oak"),
+    _stree(-10, -110, "chinese_elm"),
+    _stree(10, -110, "chinese_elm"),
+    _stree(-50, -120, "valley_oak"),
+    _stree(50, -120, "valley_oak"),
+
+    # Scattered central canopy
+    _stree(-20, 60, "sycamore"),
+    _stree(20, 60, "sycamore"),
+    _stree(0, 90, "coast_live_oak"),
+    _stree(0, -30, "valley_oak"),
+
+    # Lawn areas (grass sources)
+    _stree(-100, 130, "perennial_grass"),
+    _stree(100, 130, "perennial_grass"),
+    _stree(-100, 160, "perennial_grass"),
+    _stree(100, 160, "perennial_grass"),
+]
+
+# Stanford Main Quad buildings (approximate footprints of the sandstone quad,
+# Memorial Church, and flanking halls). Local meters from the Quad center.
+STANFORD_BUILDINGS = [
+    {"building_id": "memorial_church", "name": "Memorial Church",
+     "height": 26.0, "width": 40.0, "length": 55.0, "local_x": 0.0, "local_y": -20.0,
+     "aerodynamic_fraction": 0.5,
+     "lat": _stanford_local(0, -20)[0], "lng": _stanford_local(0, -20)[1]},
+    {"building_id": "main_quad_w", "name": "Main Quad (West)",
+     "height": 12.0, "width": 18.0, "length": 90.0, "local_x": -60.0, "local_y": 0.0,
+     "aerodynamic_fraction": 0.6,
+     "lat": _stanford_local(-60, 0)[0], "lng": _stanford_local(-60, 0)[1]},
+    {"building_id": "main_quad_e", "name": "Main Quad (East)",
+     "height": 12.0, "width": 18.0, "length": 90.0, "local_x": 60.0, "local_y": 0.0,
+     "aerodynamic_fraction": 0.6,
+     "lat": _stanford_local(60, 0)[0], "lng": _stanford_local(60, 0)[1]},
+    {"building_id": "main_quad_s", "name": "Main Quad (South Row)",
+     "height": 12.0, "width": 90.0, "length": 16.0, "local_x": 0.0, "local_y": -50.0,
+     "aerodynamic_fraction": 0.6,
+     "lat": _stanford_local(0, -50)[0], "lng": _stanford_local(0, -50)[1]},
+    {"building_id": "memorial_court", "name": "Memorial Court Arcade",
+     "height": 10.0, "width": 90.0, "length": 14.0, "local_x": 0.0, "local_y": 50.0,
+     "aerodynamic_fraction": 0.6,
+     "lat": _stanford_local(0, 50)[0], "lng": _stanford_local(0, 50)[1]},
+    {"building_id": "hoover_tower", "name": "Hoover Tower",
+     "height": 87.0, "width": 20.0, "length": 20.0, "local_x": 130.0, "local_y": -70.0,
+     "aerodynamic_fraction": 0.4,
+     "lat": _stanford_local(130, -70)[0], "lng": _stanford_local(130, -70)[1]},
+]
+
+STANFORD_PATHS = [
+    {"name": "Palm Drive to Main Quad",
+     "waypoints": [{"x": 0, "y": 210}, {"x": 0, "y": 150}, {"x": 0, "y": 90}, {"x": 0, "y": 50}, {"x": 0, "y": 0}]},
+    {"name": "Oval to Memorial Church",
+     "waypoints": [{"x": 0, "y": 175}, {"x": 0, "y": 100}, {"x": 0, "y": 30}, {"x": 0, "y": -20}]},
+    {"name": "West Quad to East Quad",
+     "waypoints": [{"x": -60, "y": 0}, {"x": -30, "y": 0}, {"x": 0, "y": 0}, {"x": 30, "y": 0}, {"x": 60, "y": 0}]},
+    {"name": "Main Quad to Hoover Tower",
+     "waypoints": [{"x": 0, "y": 0}, {"x": 40, "y": -20}, {"x": 80, "y": -45}, {"x": 130, "y": -70}]},
+    {"name": "Memorial Court to Science Quad",
+     "waypoints": [{"x": 0, "y": 50}, {"x": 0, "y": 0}, {"x": 0, "y": -50}, {"x": 0, "y": -100}, {"x": 0, "y": -120}]},
+]
+
+
+# ============================================================
+# CAMPUS REGISTRY
+# ============================================================
+CAMPUSES = {
+    "gunn": {
+        "key": "gunn",
+        "name": "Gunn High School",
+        "subtitle": "Palo Alto, CA",
+        "center_lat": GUNN_CENTER_LAT,
+        "center_lon": GUNN_CENTER_LON,
+        "bounds": {"north": 37.4038, "south": 37.3988, "east": -122.1300, "west": -122.1372},
+        "boundary": GUNN_BOUNDARY,
+        "trees": GUNN_TREES,
+        "buildings": GUNN_BUILDINGS,
+        "paths": GUNN_PATHS,
+    },
+    "stanford": {
+        "key": "stanford",
+        "name": "Stanford University",
+        "subtitle": "Main Quad, Stanford, CA",
+        "center_lat": STANFORD_CENTER_LAT,
+        "center_lon": STANFORD_CENTER_LON,
+        "bounds": STANFORD_BOUNDS,
+        "boundary": STANFORD_BOUNDARY,
+        "trees": STANFORD_TREES,
+        "buildings": STANFORD_BUILDINGS,
+        "paths": STANFORD_PATHS,
+    },
+}
+
+DEFAULT_CAMPUS = "gunn"
+
+
+def get_campus(key: str) -> dict:
+    """Return the campus record for key, falling back to the default campus."""
+    return CAMPUSES.get((key or "").lower(), CAMPUSES[DEFAULT_CAMPUS])

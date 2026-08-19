@@ -15,13 +15,18 @@ CAMPUS_LAT = 37.4027
 CAMPUS_LON = -122.1342
 
 
-def fetch_pollen_forecast(api_key: Optional[str] = None, days: int = 5) -> List[Dict]:
+def fetch_pollen_forecast(api_key: Optional[str] = None, days: int = 5,
+                          lat: Optional[float] = None, lon: Optional[float] = None) -> List[Dict]:
     """
     Fetch regional pollen forecast from Google Pollen API.
     Returns list of daily forecasts with UPI values for TREE, GRASS, WEED.
     """
     if api_key is None:
         api_key = os.environ.get("GOOGLE_POLLEN_API_KEY", "")
+    if lat is None:
+        lat = CAMPUS_LAT
+    if lon is None:
+        lon = CAMPUS_LON
 
     if not api_key:
         return _mock_pollen_forecast(days)
@@ -29,8 +34,8 @@ def fetch_pollen_forecast(api_key: Optional[str] = None, days: int = 5) -> List[
     url = "https://pollen.googleapis.com/v1/forecast:lookup"
     params = {
         "key": api_key,
-        "location.longitude": CAMPUS_LON,
-        "location.latitude": CAMPUS_LAT,
+        "location.longitude": lon,
+        "location.latitude": lat,
         "days": days,
     }
 
@@ -76,9 +81,9 @@ def fetch_pollen_forecast(api_key: Optional[str] = None, days: int = 5) -> List[
         return _mock_pollen_forecast(days)
 
 
-def get_current_upi() -> Dict:
+def get_current_upi(lat: Optional[float] = None, lon: Optional[float] = None) -> Dict:
     """Get today's Universal Pollen Index values."""
-    forecasts = fetch_pollen_forecast(days=1)
+    forecasts = fetch_pollen_forecast(days=1, lat=lat, lon=lon)
     if forecasts:
         return forecasts[0]
     return {"tree_upi": 0, "grass_upi": 0, "weed_upi": 0, "dominant_species": None}

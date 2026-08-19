@@ -5,16 +5,30 @@ import {
 } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import type { HeatmapResponse, FloraItem, Building } from '../utils/api';
+import type { HeatmapResponse, FloraItem, Building, Campus } from '../utils/api';
 
 interface CampusMapProps {
   heatmap: HeatmapResponse | null;
   flora: FloraItem[];
   buildings: Building[];
+  campus: Campus | null;
   onTreeSelect: (tree: FloraItem) => void;
 }
 
 const CAMPUS_CENTER: [number, number] = [37.4012, -122.1340];
+
+// Geographic extent of the satellite background image. This is the single
+// source of truth: the map must never display an area larger than this, so we
+// clamp panning to these bounds and compute a minZoom that keeps the image
+// filling the viewport (no black/empty borders when zoomed out).
+const SATELLITE_BOUNDS: [[number, number], [number, number]] = [
+  [37.3988, -122.1372],
+  [37.4038, -122.1300],
+];
+
+// Zoom step for the +/- buttons. A full Leaflet zoom level is a 2x scale
+// change, so a 5% size change per click is log2(1.05) ~= 0.0704 levels.
+const ZOOM_STEP_5_PERCENT = Math.log2(1.05);
 
 // Campus boundary - rotated 25° to align with Arastradero Rd
 const CAMPUS_BOUNDARY: [number, number][] = [
@@ -37,6 +51,7 @@ interface DetectedFeature {
 }
 
 const SPECIES_INFO: Record<string, { name: string; scientific: string; family: string; potency: number }> = {
+  palm: { name: "Canary Island Date Palm", scientific: "Phoenix canariensis", family: "Arecaceae", potency: 3.0 },
   valley_oak: { name: "Valley Oak", scientific: "Quercus lobata", family: "Fagaceae", potency: 4.5 },
   coast_live_oak: { name: "Coast Live Oak", scientific: "Quercus agrifolia", family: "Fagaceae", potency: 4.0 },
   redwood: { name: "Coast Redwood", scientific: "Sequoia sempervirens", family: "Cupressaceae", potency: 2.5 },
@@ -47,7 +62,7 @@ const SPECIES_INFO: Record<string, { name: string; scientific: string; family: s
   perennial_grass: { name: "Turf Grass", scientific: "Poaceae spp.", family: "Poaceae", potency: 4.0 },
 };
 
-function HeatmapOverlay({ heatmap, visible }: { heatmap: HeatmapResponse | null; visible: boolean }) {
+function HeatmapOverlay({ heatmap, visible, bounds }: { heatmap: HeatmapResponse | null; visible: boolean; bounds: [[number, number], [number, number]] }) {
   const map = useMap();
   const overlayRef = useRef<L.ImageOverlay | null>(null);
 
@@ -55,14 +70,14 @@ function HeatmapOverlay({ heatmap, visible }: { heatmap: HeatmapResponse | null;
     if (overlayRef.current) { map.removeLayer(overlayRef.current); overlayRef.current = null; }
     if (!visible || !heatmap || !heatmap.points.length) return;
 
-    const bounds = L.latLngBounds([37.3988, -122.1372], [37.4038, -122.1300]);
+    const llBounds = L.latLngBounds(bounds);
     const canvas = document.createElement('canvas');
     canvas.width = 500; canvas.height = 500;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const south = bounds.getSouth(), north = bounds.getNorth();
-    const west = bounds.getWest(), east = bounds.getEast();
+    const south = llBounds.getSouth(), north = llBounds.getNorth();
+    const west = llBounds.getWest(), east = llBounds.getEast();
 
     heatmap.points.forEach((p) => {
       const px = ((p.lng - west) / (east - west)) * 500;
@@ -86,26 +101,78 @@ function HeatmapOverlay({ heatmap, visible }: { heatmap: HeatmapResponse | null;
       ctx.arc(px, py, radius, 0, Math.PI * 2); ctx.fill();
     });
 
-    const overlay = L.imageOverlay(canvas.toDataURL(), bounds, { opacity: 0.7, interactive: false });
+    const overlay = L.imageOverlay(canvas.toDataURL(), llBounds, { opacity: 0.7, interactive: false });
     overlay.addTo(map);
     overlayRef.current = overlay;
     return () => { if (overlayRef.current) { map.removeLayer(overlayRef.current); overlayRef.current = null; } };
-  }, [heatmap, visible, map]);
+  }, [heatmap, visible, map, bounds]);
   return null;
 }
 
-export default function CampusMap({ heatmap, flora, buildings, onTreeSelect }: CampusMapProps) {
+// Ensures the ENTIRE satellite image is always visible. It computes the zoom
+// at which SATELLITE_BOUNDS fully fits inside the map container, enforces that
+// as the maximum zoom-out (minZoom), and recomputes on resize. Any leftover
+// margin (when the window aspect differs from the image) is covered by the
+// map container's background color rather than a black band.
+function FitImageBounds({ bounds }: { bounds: [[number, number], [number, number]] }) {
+  const map = useMap();
+
+  useEffect(() => {
+    const llBounds = L.latLngBounds(bounds);
+    let initialized = false;
+
+    const clampMinZoom = () => {
+      // Two reference zooms:
+      //  - fitZoom (inside=false): whole image visible, but leaves margins
+      //    on the sides when the window is wider than the near-square image.
+      //  - fillZoom (inside=true): image covers the whole viewport with no
+      //    margins, but crops the top/bottom edges.
+      // We bias strongly toward fillZoom to minimize the dark margins while
+      // keeping almost the entire image in view.
+      const fitZoom = map.getBoundsZoom(llBounds, false);
+      const fillZoom = map.getBoundsZoom(llBounds, true);
+      const minZoom = Math.max(fitZoom, fillZoom - 0.4);
+      map.setMinZoom(minZoom);
+      if (!initialized) {
+        map.setView(llBounds.getCenter(), minZoom, { animate: false });
+        initialized = true;
+      } else if (map.getZoom() < minZoom) {
+        map.setZoom(minZoom);
+      }
+    };
+
+    clampMinZoom();
+    map.on('resize', clampMinZoom);
+    return () => {
+      map.off('resize', clampMinZoom);
+    };
+  }, [map, bounds]);
+
+  return null;
+}
+
+export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSelect }: CampusMapProps) {
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [showDetected, setShowDetected] = useState(true);
   const [detectedTrees, setDetectedTrees] = useState<DetectedFeature[]>([]);
   const [detectedBuildings, setDetectedBuildings] = useState<DetectedFeature[]>([]);
   const [detecting, setDetecting] = useState(true);
 
+  const campusKey = campus?.key || 'gunn';
+
+  // Map bounds from the selected campus (fall back to Gunn's bounds).
+  const bounds: [[number, number], [number, number]] = campus
+    ? [[campus.bounds.south, campus.bounds.west], [campus.bounds.north, campus.bounds.east]]
+    : SATELLITE_BOUNDS;
+  const center: [number, number] = campus
+    ? [campus.center_lat, campus.center_lon]
+    : [37.4013, -122.1336];
+
   const deleteTree = (index: number) => {
     const updated = detectedTrees.filter((_, i) => i !== index);
     setDetectedTrees(updated);
     // Save to backend
-    fetch('/api/detect/update', {
+    fetch(`/api/detect/update?campus=${campusKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ trees: updated }),
@@ -113,7 +180,8 @@ export default function CampusMap({ heatmap, flora, buildings, onTreeSelect }: C
   };
 
   useEffect(() => {
-    fetch('/api/detect')
+    setDetecting(true);
+    fetch(`/api/detect?campus=${campusKey}`)
       .then((r) => r.json())
       .then((data) => {
         setDetectedTrees(data.trees || []);
@@ -121,30 +189,36 @@ export default function CampusMap({ heatmap, flora, buildings, onTreeSelect }: C
         setDetecting(false);
       })
       .catch(() => setDetecting(false));
-  }, []);
+  }, [campusKey]);
 
   return (
     <div className="w-full h-full relative" style={{ minHeight: '500px' }}>
       <MapContainer
-        center={[37.4015, -122.1338]}
-        zoom={18}
-        maxBounds={[[37.3980, -122.1380], [37.4046, -122.1292]]}
+        center={center}
+        zoom={16}
+        maxBounds={bounds}
         maxBoundsViscosity={1.0}
-        style={{ width: '100%', height: '100%' }}
+        style={{ width: '100%', height: '100%', background: '#0f172a' }}
         zoomControl={false}
         scrollWheelZoom={true}
+        zoomSnap={0}
+        zoomDelta={ZOOM_STEP_5_PERCENT}
+        wheelPxPerZoomLevel={880}
         crs={L.CRS.EPSG3857}
       >
+        {/* Clamp minimum zoom so the satellite image always fills the view */}
+        <FitImageBounds bounds={bounds} />
+
         {/* Use downloaded satellite image as background instead of tile API */}
         <ImageOverlay
-          url="/api/static/satellite.png"
-          bounds={[[37.3988, -122.1372], [37.4038, -122.1300]]}
+          url={`/api/static/satellite.png?campus=${campusKey}`}
+          bounds={bounds}
         />
 
         <ZoomControl position="bottomright" />
 
         {/* Heatmap overlay */}
-        <HeatmapOverlay heatmap={heatmap} visible={showHeatmap} />
+        <HeatmapOverlay heatmap={heatmap} visible={showHeatmap} bounds={bounds} />
 
         {/* Detected trees from satellite image recognition */}
         {showDetected && detectedTrees.map((tree, i) => {
@@ -152,7 +226,7 @@ export default function CampusMap({ heatmap, flora, buildings, onTreeSelect }: C
           const speciesColors: Record<string, string> = {
             valley_oak: '#dc2626', coast_live_oak: '#ef4444', redwood: '#166534',
             eucalyptus: '#6b7280', pine: '#064e3b', chinese_elm: '#ca8a04',
-            sycamore: '#a16207', perennial_grass: '#84cc16',
+            sycamore: '#a16207', perennial_grass: '#84cc16', palm: '#0891b2',
           };
           const color = speciesColors[tree.species_key || ''] || '#22c55e';
           return (

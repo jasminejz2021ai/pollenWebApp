@@ -1,5 +1,19 @@
 const API_BASE = (import.meta as any).env?.VITE_API_URL || '/api';
 
+export interface Campus {
+  key: string;
+  name: string;
+  subtitle: string;
+  center_lat: number;
+  center_lon: number;
+  bounds: { north: number; south: number; east: number; west: number };
+  boundary: Array<{ lat: number; lng: number }>;
+}
+
+function q(campus?: string): string {
+  return campus ? `?campus=${encodeURIComponent(campus)}` : '';
+}
+
 export interface WindData {
   speed: number;
   direction: number;
@@ -109,33 +123,38 @@ export interface Advisory {
   timestamp: string;
 }
 
-export async function fetchHeatmap(): Promise<HeatmapResponse> {
-  const res = await fetch(`${API_BASE}/heatmap`);
+export async function fetchCampuses(): Promise<{ campuses: Campus[]; default: string }> {
+  const res = await fetch(`${API_BASE}/campuses`);
   return res.json();
 }
 
-export async function fetchFlora(): Promise<{ flora: FloraItem[]; active_species: ActiveSpecies[] }> {
-  const res = await fetch(`${API_BASE}/flora`);
+export async function fetchHeatmap(campus?: string): Promise<HeatmapResponse> {
+  const res = await fetch(`${API_BASE}/heatmap${q(campus)}`);
   return res.json();
 }
 
-export async function fetchBuildings(): Promise<{ buildings: Building[] }> {
-  const res = await fetch(`${API_BASE}/buildings`);
+export async function fetchFlora(campus?: string): Promise<{ flora: FloraItem[]; active_species: ActiveSpecies[] }> {
+  const res = await fetch(`${API_BASE}/flora${q(campus)}`);
   return res.json();
 }
 
-export async function fetchWeather(): Promise<WindData> {
-  const res = await fetch(`${API_BASE}/weather`);
+export async function fetchBuildings(campus?: string): Promise<{ buildings: Building[] }> {
+  const res = await fetch(`${API_BASE}/buildings${q(campus)}`);
   return res.json();
 }
 
-export async function fetchPollenForecast(): Promise<{ forecasts: PollenForecast[] }> {
-  const res = await fetch(`${API_BASE}/pollen-forecast`);
+export async function fetchWeather(campus?: string): Promise<WindData> {
+  const res = await fetch(`${API_BASE}/weather${q(campus)}`);
   return res.json();
 }
 
-export async function fetchPathExposure(path: [number, number][]): Promise<PathExposure> {
-  const res = await fetch(`${API_BASE}/path-exposure`, {
+export async function fetchPollenForecast(campus?: string): Promise<{ forecasts: PollenForecast[] }> {
+  const res = await fetch(`${API_BASE}/pollen-forecast${q(campus)}`);
+  return res.json();
+}
+
+export async function fetchPathExposure(path: [number, number][], campus?: string): Promise<PathExposure> {
+  const res = await fetch(`${API_BASE}/path-exposure${q(campus)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path }),
@@ -145,9 +164,10 @@ export async function fetchPathExposure(path: [number, number][]): Promise<PathE
 
 export async function fetchOptimalRoute(
   start: [number, number],
-  end: [number, number]
+  end: [number, number],
+  campus?: string
 ): Promise<any> {
-  const res = await fetch(`${API_BASE}/optimal-route`, {
+  const res = await fetch(`${API_BASE}/optimal-route${q(campus)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ start, end }),
@@ -155,7 +175,7 @@ export async function fetchOptimalRoute(
   return res.json();
 }
 
-export async function fetchAdvisory(): Promise<Advisory> {
-  const res = await fetch(`${API_BASE}/advisory`);
+export async function fetchAdvisory(campus?: string): Promise<Advisory> {
+  const res = await fetch(`${API_BASE}/advisory${q(campus)}`);
   return res.json();
 }

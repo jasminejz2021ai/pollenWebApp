@@ -6,7 +6,7 @@ import {
   PollenForecast, Advisory,
 } from '../utils/api';
 
-export function usePollenData() {
+export function usePollenData(campus: string) {
   const [heatmap, setHeatmap] = useState<HeatmapResponse | null>(null);
   const [flora, setFlora] = useState<FloraItem[]>([]);
   const [activeSpecies, setActiveSpecies] = useState<ActiveSpecies[]>([]);
@@ -22,12 +22,12 @@ export function usePollenData() {
       setLoading(true);
       const [heatmapData, floraData, buildingData, weatherData, forecastData, advisoryData] =
         await Promise.all([
-          fetchHeatmap(),
-          fetchFlora(),
-          fetchBuildings(),
-          fetchWeather(),
-          fetchPollenForecast(),
-          fetchAdvisory(),
+          fetchHeatmap(campus),
+          fetchFlora(campus),
+          fetchBuildings(campus),
+          fetchWeather(campus),
+          fetchPollenForecast(campus),
+          fetchAdvisory(campus),
         ]);
 
       setHeatmap(heatmapData);
@@ -43,7 +43,7 @@ export function usePollenData() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [campus]);
 
   useEffect(() => {
     refreshData();

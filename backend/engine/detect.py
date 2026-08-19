@@ -40,7 +40,8 @@ SPECIES_INFO = {
 def classify_tree_by_size_and_position(radius_m: float, lat: float, lng: float) -> str:
     """
     Classify tree species based on canopy radius and position on campus.
-    Uses heuristics from the PAUSD arborist survey distribution.
+    Uses heuristics from the PAUSD arborist survey distribution (Gunn-tuned,
+    but produces reasonable generic oak/redwood/elm labels elsewhere).
     """
     # Athletic fields (south) - grass
     if lat < 37.4005:
@@ -77,17 +78,34 @@ def classify_tree_by_size_and_position(radius_m: float, lat: float, lng: float) 
     return "coast_live_oak"
 
 
-def fetch_satellite_tile(zoom: int = 17) -> np.ndarray:
+def classify_tree_generic(radius_m: float) -> str:
+    """Size-only species classifier for campuses without location heuristics."""
+    if radius_m > 14:
+        return "valley_oak"
+    if radius_m > 9:
+        return "coast_live_oak"
+    if radius_m > 5:
+        return "sycamore"
+    return "chinese_elm"
+
+
+def fetch_satellite_tile(zoom: int = 17, bounds: dict = None) -> np.ndarray:
     """
-    Fetch satellite imagery from Esri World Imagery for the campus area.
+    Fetch satellite imagery from Esri World Imagery for the given bounds.
     Returns RGB numpy array with correct geographic proportions.
+    bounds: optional dict {north, south, east, west}; defaults to Gunn globals.
     """
+    north = bounds["north"] if bounds else NORTH
+    south = bounds["south"] if bounds else SOUTH
+    east = bounds["east"] if bounds else EAST
+    west = bounds["west"] if bounds else WEST
+
     # Calculate proper aspect ratio from geographic extent
-    lat_span = NORTH - SOUTH  # degrees
-    lng_span = EAST - WEST    # degrees
+    lat_span = north - south  # degrees
+    lng_span = east - west    # degrees
     # Convert to meters for aspect ratio
     height_m = lat_span * 111320
-    width_m = abs(lng_span) * 111320 * math.cos(math.radians((NORTH + SOUTH) / 2))
+    width_m = abs(lng_span) * 111320 * math.cos(math.radians((north + south) / 2))
     
     # Image dimensions matching geographic aspect ratio
     base_size = 1600
@@ -98,7 +116,7 @@ def fetch_satellite_tile(zoom: int = 17) -> np.ndarray:
         height = base_size
         width = int(base_size * width_m / height_m)
 
-    bbox = f"{WEST},{SOUTH},{EAST},{NORTH}"
+    bbox = f"{west},{south},{east},{north}"
     url = (
         f"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export"
         f"?bbox={bbox}&bboxSR=4326&size={width},{height}"
@@ -115,14 +133,18 @@ def fetch_satellite_tile(zoom: int = 17) -> np.ndarray:
         return np.zeros((height, width, 3), dtype=np.uint8)
 
 
-def pixel_to_latlng(px: int, py: int, img_width: int, img_height: int) -> Tuple[float, float]:
-    """Convert pixel coordinates to lat/lng."""
-    lng = WEST + (px / img_width) * (EAST - WEST)
-    lat = NORTH - (py / img_height) * (NORTH - SOUTH)
+def pixel_to_latlng(px: int, py: int, img_width: int, img_height: int, bounds: dict = None) -> Tuple[float, float]:
+    """Convert pixel coordinates to lat/lng within the given bounds."""
+    north = bounds["north"] if bounds else NORTH
+    south = bounds["south"] if bounds else SOUTH
+    east = bounds["east"] if bounds else EAST
+    west = bounds["west"] if bounds else WEST
+    lng = west + (px / img_width) * (east - west)
+    lat = north - (py / img_height) * (north - south)
     return lat, lng
 
 
-def detect_trees(img: np.ndarray, min_area: int = 60) -> List[Dict]:
+def detect_trees(img: np.ndarray, min_area: int = 60, bounds: dict = None, use_position_classifier: bool = True) -> List[Dict]:
     """
     Detect tree canopy using calibrated color segmentation.
     Thresholds learned from user-verified trees:
@@ -169,19 +191,21 @@ def detect_trees(img: np.ndarray, min_area: int = 60) -> List[Dict]:
         # Get centroid
         ys, xs = np.where(region)
         cy, cx = np.mean(ys), np.mean(xs)
-        lat, lng = pixel_to_latlng(cx, cy, w, h)
+        lat, lng = pixel_to_latlng(cx, cy, w, h, bounds)
 
         # Estimate radius in meters
         radius_px = math.sqrt(area / math.pi)
-        radius_m = radius_px * (NORTH - SOUTH) * 111320 / h
+        span_lat = (bounds["north"] - bounds["south"]) if bounds else (NORTH - SOUTH)
+        span_lng = (bounds["east"] - bounds["west"]) if bounds else (EAST - WEST)
+        radius_m = radius_px * span_lat * 111320 / h
 
         # Skip overly large detections (likely fields, not individual trees)
         if radius_m > 50:
             continue
 
         # Generate simple circle polygon centered at centroid
-        r_lat = radius_px * (NORTH - SOUTH) / h
-        r_lng = radius_px * (EAST - WEST) / w
+        r_lat = radius_px * span_lat / h
+        r_lng = radius_px * span_lng / w
 
         num_pts = 20
         polygon = []
@@ -192,6 +216,11 @@ def detect_trees(img: np.ndarray, min_area: int = 60) -> List[Dict]:
                 round(lng + r_lng * math.cos(theta), 6),
             ])
 
+        species_key = (
+            classify_tree_by_size_and_position(radius_m, lat, lng)
+            if use_position_classifier
+            else classify_tree_generic(radius_m)
+        )
         trees.append({
             "lat": round(lat, 6),
             "lng": round(lng, 6),
@@ -199,7 +228,7 @@ def detect_trees(img: np.ndarray, min_area: int = 60) -> List[Dict]:
             "radius_m": round(radius_m, 1),
             "polygon": polygon,
             "type": "tree",
-            "species_key": classify_tree_by_size_and_position(radius_m, lat, lng),
+            "species_key": species_key,
         })
 
     return trees
@@ -281,28 +310,25 @@ def detect_buildings(img: np.ndarray, min_area: int = 200) -> List[Dict]:
     return buildings
 
 
-def run_detection() -> Dict:
-    """Run full detection pipeline and return results."""
+def run_detection(bounds: dict = None, use_position_classifier: bool = True) -> Dict:
+    """Run full detection pipeline for the given bounds and return results."""
     print("Fetching satellite imagery...")
-    img = fetch_satellite_tile()
+    img = fetch_satellite_tile(bounds=bounds)
 
     if img.max() == 0:
         return {"trees": [], "buildings": [], "error": "Failed to fetch imagery"}
 
     print(f"Image shape: {img.shape}")
     print("Detecting trees...")
-    trees = detect_trees(img)
+    trees = detect_trees(img, bounds=bounds, use_position_classifier=use_position_classifier)
     print(f"Found {len(trees)} tree canopy regions")
 
-    print("Detecting buildings...")
-    buildings = detect_buildings(img)
-    print(f"Found {len(buildings)} building regions")
-
+    b = bounds or {"north": NORTH, "south": SOUTH, "east": EAST, "west": WEST}
     return {
         "trees": trees,
-        "buildings": buildings,
+        "buildings": [],
         "image_size": list(img.shape[:2]),
-        "bounds": {"north": NORTH, "south": SOUTH, "east": EAST, "west": WEST},
+        "bounds": {"north": b["north"], "south": b["south"], "east": b["east"], "west": b["west"]},
     }
 
 

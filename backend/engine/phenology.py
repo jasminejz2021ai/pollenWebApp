@@ -13,6 +13,18 @@ from typing import Dict, List, Optional, Tuple
 # Palo Alto / Gunn High School campus botanical profiles
 # Each entry: (common_name, scientific_name, start_day, end_day, peak_day, sigma_t, potency_weight, base_emission)
 BOTANICAL_CATALOG = {
+    "palm": {
+        "common_name": "Canary Island Date Palm",
+        "scientific_name": "Phoenix canariensis",
+        "family": "Arecaceae",
+        "start_day": 74,   # March 15
+        "end_day": 135,    # May 15
+        "peak_day": 105,   # April 15
+        "sigma_t": 20.0,
+        "potency_weight": 3.0,
+        "base_emission": 350.0,
+        "symptoms": "Moderate allergic rhinitis, sneezing, itchy eyes",
+    },
     "coast_live_oak": {
         "common_name": "Coast Live Oak",
         "scientific_name": "Quercus agrifolia",
