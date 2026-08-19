@@ -1,0 +1,105 @@
+"""
+Campus AeroAllergen Mapping (CAM) - Weather Service
+
+Fetches real-time wind data from OpenWeatherMap API and converts
+meteorological measurements into grid-aligned velocity components.
+"""
+
+import os
+import requests
+from datetime import datetime
+from typing import Dict, Optional, Tuple
+
+# Gunn High School coordinates
+CAMPUS_LAT = 37.4027
+CAMPUS_LON = -122.1342
+
+
+def fetch_current_wind(api_key: Optional[str] = None) -> Dict:
+    """
+    Fetch current wind conditions from OpenWeatherMap for campus location.
+    Returns dict with speed, direction, u, v components, and stability class.
+    """
+    if api_key is None:
+        api_key = os.environ.get("OPENWEATHER_API_KEY", "")
+
+    if not api_key:
+        return _mock_wind_data()
+
+    url = "https://api.openweathermap.org/data/2.5/weather"
+    params = {
+        "lat": CAMPUS_LAT,
+        "lon": CAMPUS_LON,
+        "appid": api_key,
+        "units": "metric",
+    }
+
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        wind_speed = data["wind"]["speed"]
+        wind_dir = data["wind"]["deg"]
+        temp = data["main"]["temp"]
+        clouds = data.get("clouds", {}).get("all", 50)
+
+        u, v = _wind_components(wind_speed, wind_dir)
+        stability = _estimate_stability_class(wind_speed, clouds, temp)
+
+        return {
+            "speed": wind_speed,
+            "direction": wind_dir,
+            "u": round(u, 3),
+            "v": round(v, 3),
+            "temperature": temp,
+            "humidity": data["main"].get("humidity"),
+            "stability_class": stability,
+            "timestamp": datetime.utcnow().isoformat(),
+            "source": "openweathermap",
+        }
+    except (requests.RequestException, KeyError):
+        return _mock_wind_data()
+
+
+def _wind_components(speed: float, direction_deg: float) -> Tuple[float, float]:
+    """Convert wind speed/direction to u,v grid components."""
+    import numpy as np
+    theta = np.radians(270.0 - direction_deg)
+    u = speed * np.cos(theta)
+    v = speed * np.sin(theta)
+    return float(u), float(v)
+
+
+def _estimate_stability_class(
+    wind_speed: float, cloud_cover: int, temperature: float
+) -> str:
+    """
+    Estimate Pasquill-Gifford atmospheric stability class.
+    Simplified estimation based on wind speed and cloud cover.
+    """
+    if wind_speed < 2.0:
+        return "A" if cloud_cover < 30 else "B"
+    elif wind_speed < 3.0:
+        return "B" if cloud_cover < 50 else "C"
+    elif wind_speed < 5.0:
+        return "C" if cloud_cover < 50 else "D"
+    elif wind_speed < 6.0:
+        return "D"
+    else:
+        return "D" if cloud_cover < 70 else "E"
+
+
+def _mock_wind_data() -> Dict:
+    """Return realistic mock wind data for development/testing."""
+    return {
+        "speed": 3.5,
+        "direction": 240.0,
+        "u": -3.03,
+        "v": -1.75,
+        "temperature": 18.5,
+        "humidity": 55,
+        "stability_class": "D",
+        "timestamp": datetime.utcnow().isoformat(),
+        "source": "mock",
+    }
