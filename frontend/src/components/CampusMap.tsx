@@ -134,33 +134,28 @@ function FitImageBounds({ bounds }: { bounds: [[number, number], [number, number
 
   useEffect(() => {
     const llBounds = L.latLngBounds(bounds);
-    let didInitialFit = false;
 
-    const applyFit = () => {
+    const applyFill = () => {
       // Container must have its real size before getBoundsZoom is meaningful.
       map.invalidateSize({ animate: false });
-      // fillZoom (inside=true): image covers the whole viewport with no black
-      // strips. fitZoom (inside=false): whole image visible.
       const fitZoom = map.getBoundsZoom(llBounds, false);
       const fillZoom = map.getBoundsZoom(llBounds, true);
-      // Let the user zoom out to see the whole image, but no further.
       map.setMinZoom(fitZoom);
-      if (!didInitialFit) {
-        // Open covering the full width (no side strips).
-        map.setView(llBounds.getCenter(), fillZoom, { animate: false });
-        didInitialFit = true;
-      }
+      // Recenter on the image and zoom so it covers the full viewport (no
+      // black strips). Applied repeatedly during the settle window below so a
+      // still-sizing container on first load can't leave the image too small.
+      map.setView(llBounds.getCenter(), fillZoom, { animate: false });
     };
 
-    // Run once the map is ready, then again on the next frame in case the
-    // container was still sizing (a common cause of black strips on first load).
-    map.whenReady(() => {
-      applyFit();
-      requestAnimationFrame(applyFit);
-    });
+    // Apply immediately when ready, then again across a short settle window to
+    // catch the container reaching its final size on first load (the cause of
+    // the black strips that appeared on the default campus).
+    map.whenReady(applyFill);
+    const raf = requestAnimationFrame(applyFill);
+    const timers = [50, 150, 400, 800].map((ms) => setTimeout(applyFill, ms));
 
-    // On window/container resize, only re-fit to fill; do not fight the user's
-    // current zoom (which would make the +/- buttons feel broken).
+    // After the settle window, stop force-centering so the user can pan/zoom
+    // freely; only enforce the zoom-out floor on later resizes.
     const onResize = () => {
       map.invalidateSize({ animate: false });
       const fitZoom = map.getBoundsZoom(llBounds, false);
@@ -170,8 +165,12 @@ function FitImageBounds({ bounds }: { bounds: [[number, number], [number, number
         map.setView(llBounds.getCenter(), fillZoom, { animate: false });
       }
     };
-    map.on('resize', onResize);
+    const resizeTimer = setTimeout(() => map.on('resize', onResize), 900);
+
     return () => {
+      cancelAnimationFrame(raf);
+      timers.forEach(clearTimeout);
+      clearTimeout(resizeTimer);
       map.off('resize', onResize);
     };
   }, [map, bounds]);
