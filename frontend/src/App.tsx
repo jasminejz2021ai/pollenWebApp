@@ -5,13 +5,19 @@ import CampusMap from './components/CampusMap';
 import AdvisoryBanner from './components/AdvisoryBanner';
 import SidePanel from './components/SidePanel';
 import TreeInfoCard from './components/TreeInfoCard';
+import TestModePanel from './components/TestModePanel';
 import { fetchCampuses } from './utils/api';
-import type { FloraItem, Campus } from './utils/api';
+import type { FloraItem, Campus, TestParams } from './utils/api';
 
 export default function App() {
   const [campuses, setCampuses] = useState<Campus[]>([]);
   const [campusKey, setCampusKey] = useState<string>('gunn');
-  const data = usePollenData(campusKey);
+  const [receptorHeight, setReceptorHeight] = useState<number>(1.5);
+  const [testEnabled, setTestEnabled] = useState<boolean>(false);
+  const [testParams, setTestParams] = useState<TestParams>({
+    day: 105, wind_speed: 3.5, wind_dir: 240, stability: 'D',
+  });
+  const data = usePollenData(campusKey, receptorHeight, testEnabled ? testParams : undefined);
   const [selectedTree, setSelectedTree] = useState<FloraItem | null>(null);
   const [showPanel, setShowPanel] = useState(true);
 
@@ -69,6 +75,8 @@ export default function App() {
         campuses={campuses}
         campusKey={campusKey}
         onCampusChange={setCampusKey}
+        receptorHeight={receptorHeight}
+        onHeightChange={setReceptorHeight}
       />
 
       {data.advisory?.advisory_message && (
@@ -96,6 +104,13 @@ export default function App() {
               />
             </div>
           )}
+
+          <TestModePanel
+            enabled={testEnabled}
+            params={testParams}
+            onToggle={setTestEnabled}
+            onChange={setTestParams}
+          />
         </div>
 
         {showPanel && (

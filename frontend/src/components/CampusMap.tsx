@@ -5,6 +5,8 @@ import {
 } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import '@geoman-io/leaflet-geoman-free';
+import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
 import type { HeatmapResponse, FloraItem, Building, Campus } from '../utils/api';
 
 interface CampusMapProps {
@@ -28,20 +30,28 @@ const SATELLITE_BOUNDS: [[number, number], [number, number]] = [
 
 const METERS_PER_DEG_LAT = 111320;
 
-// Build a rectangle footprint (list of [lat,lng] corners) for a building from
-// its center lat/lng and its width (E-W) and length (N-S) in meters.
-function buildingCorners(
-  lat: number, lng: number, width_m: number, length_m: number,
+// Build a rotated rectangle footprint from center, width (E-W, m), length
+// (N-S, m), and rotation (degrees clockwise). Returns closed [lat,lng] ring.
+function rotatedRect(
+  lat: number, lng: number, width_m: number, length_m: number, angle_deg: number,
 ): [number, number][] {
-  const dLat = (length_m / 2) / METERS_PER_DEG_LAT;
-  const dLng = (width_m / 2) / (METERS_PER_DEG_LAT * Math.cos((lat * Math.PI) / 180));
-  return [
-    [lat - dLat, lng - dLng],
-    [lat - dLat, lng + dLng],
-    [lat + dLat, lng + dLng],
-    [lat + dLat, lng - dLng],
-    [lat - dLat, lng - dLng],
+  const mLat = METERS_PER_DEG_LAT;
+  const mLng = METERS_PER_DEG_LAT * Math.cos((lat * Math.PI) / 180);
+  const hw = width_m / 2;
+  const hl = length_m / 2;
+  const a = (angle_deg * Math.PI) / 180;
+  const cos = Math.cos(a), sin = Math.sin(a);
+  // Local corners (x=E, y=N) before rotation
+  const corners: [number, number][] = [
+    [-hw, -hl], [hw, -hl], [hw, hl], [-hw, hl],
   ];
+  const ring = corners.map(([x, y]) => {
+    const rx = x * cos - y * sin;
+    const ry = x * sin + y * cos;
+    return [lat + ry / mLat, lng + rx / mLng] as [number, number];
+  });
+  ring.push(ring[0]);
+  return ring;
 }
 
 // Campus boundary - rotated 25° to align with Arastradero Rd
@@ -62,6 +72,9 @@ interface DetectedFeature {
   width_m?: number;
   height_m?: number;
   length_m?: number;
+  angle_deg?: number;
+  name?: string;
+  floors?: number;
   species_key?: string;
 }
 
@@ -77,7 +90,7 @@ const SPECIES_INFO: Record<string, { name: string; scientific: string; family: s
   perennial_grass: { name: "Turf Grass", scientific: "Poaceae spp.", family: "Poaceae", potency: 4.0 },
 };
 
-function HeatmapOverlay({ heatmap, visible, bounds }: { heatmap: HeatmapResponse | null; visible: boolean; bounds: [[number, number], [number, number]] }) {
+function HeatmapOverlay({ heatmap, visible, bounds, buildings }: { heatmap: HeatmapResponse | null; visible: boolean; bounds: [[number, number], [number, number]]; buildings: DetectedFeature[] }) {
   const map = useMap();
   const overlayRef = useRef<L.ImageOverlay | null>(null);
 
@@ -116,11 +129,33 @@ function HeatmapOverlay({ heatmap, visible, bounds }: { heatmap: HeatmapResponse
       ctx.arc(px, py, radius, 0, Math.PI * 2); ctx.fill();
     });
 
+    // Punch out building footprints: no outdoor pollen exposure at breathing
+    // height inside a building. Clearing here prevents neighboring points'
+    // radial gradients from bleeding color over the rooftops.
+    if (buildings && buildings.length) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.fillStyle = 'rgba(0,0,0,1)';
+      for (const b of buildings) {
+        const poly = b.polygon as [number, number][];
+        if (!poly || poly.length < 3) continue;
+        ctx.beginPath();
+        poly.forEach(([lat, lng], i) => {
+          const bx = ((lng - west) / (east - west)) * 500;
+          const by = ((north - lat) / (north - south)) * 500;
+          if (i === 0) ctx.moveTo(bx, by); else ctx.lineTo(bx, by);
+        });
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
     const overlay = L.imageOverlay(canvas.toDataURL(), llBounds, { opacity: 0.7, interactive: false });
     overlay.addTo(map);
     overlayRef.current = overlay;
     return () => { if (overlayRef.current) { map.removeLayer(overlayRef.current); overlayRef.current = null; } };
-  }, [heatmap, visible, map, bounds]);
+  }, [heatmap, visible, map, bounds, buildings]);
   return null;
 }
 
@@ -191,11 +226,229 @@ function AddBuildingHandler({
   return null;
 }
 
+// Derive an oriented rectangle's center, width (m), length (m), and rotation
+// (deg) from its corner lat/lngs. Uses the first edge as the "width" axis.
+function rectFromCorners(
+  corners: [number, number][], baseLat: number,
+): { lat: number; lng: number; width_m: number; length_m: number; angle_deg: number } {
+  const mLat = METERS_PER_DEG_LAT;
+  const mLng = METERS_PER_DEG_LAT * Math.cos((baseLat * Math.PI) / 180);
+  // Convert to local meters
+  const pts = corners.map(([la, ln]) => [ln * mLng, la * mLat] as [number, number]);
+  const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
+  const cy = pts.reduce((s, p) => s + p[1], 0) / pts.length;
+  // Edge 0->1 and 1->2 give the two side vectors
+  const e1x = pts[1][0] - pts[0][0], e1y = pts[1][1] - pts[0][1];
+  const e2x = pts[2][0] - pts[1][0], e2y = pts[2][1] - pts[1][1];
+  const width_m = Math.hypot(e1x, e1y);
+  const length_m = Math.hypot(e2x, e2y);
+  const angle_deg = (Math.atan2(e1y, e1x) * 180) / Math.PI;
+  const clat = cy / mLat;
+  const clng = cx / mLng;
+  return { lat: clat, lng: clng, width_m, length_m, angle_deg };
+}
+
+// Imperative edit layer: edits ONE selected building at a time. Draws it as a
+// Leaflet polygon with Geoman drag/resize plus a draggable rotation handle.
+// Editing one shape avoids the churn of managing all buildings at once.
+function BuildingEditLayer({
+  selectedIndex, building, onChange,
+}: {
+  selectedIndex: number | null;
+  building: DetectedFeature | null;
+  onChange: (index: number, patch: Partial<DetectedFeature>) => void;
+}) {
+  const map = useMap();
+  const layersRef = useRef<L.Layer[]>([]);
+
+  useEffect(() => {
+    layersRef.current.forEach((l) => map.removeLayer(l));
+    layersRef.current = [];
+    if (selectedIndex === null || !building || !building.polygon) return;
+
+    const i = selectedIndex;
+    const b = building;
+    const poly = L.polygon(b.polygon as [number, number][], {
+      color: '#f59e0b', weight: 3, fillColor: '#f59e0b', fillOpacity: 0.35,
+    }).addTo(map);
+    layersRef.current.push(poly);
+
+    // Show vertex + edge markers for resizing, and allow dragging the whole
+    // shape. Passing draggable here keeps vertex-edit markers visible (calling
+    // enableLayerDrag separately would hide them and only allow moving).
+    (poly as any).pm.enable({
+      allowSelfIntersection: false,
+      draggable: true,
+      snappable: false,
+    });
+
+    const commitShape = () => {
+      const latlngs = (poly.getLatLngs()[0] as L.LatLng[]).map(
+        (p) => [p.lat, p.lng] as [number, number]);
+      if (latlngs.length >= 4) {
+        const r = rectFromCorners(latlngs.slice(0, 4), b.lat);
+        onChange(i, {
+          lat: r.lat, lng: r.lng,
+          width_m: Math.round(r.width_m),
+          length_m: Math.round(r.length_m),
+          angle_deg: Math.round(r.angle_deg),
+        });
+      }
+      positionHandle();
+    };
+    poly.on('pm:markerdragend', commitShape);
+    poly.on('pm:edit', commitShape);
+    poly.on('pm:dragend', commitShape);
+
+    // Draggable rotation handle placed just outside the polygon's north edge.
+    const mLat = METERS_PER_DEG_LAT;
+    const handle = L.marker([b.lat, b.lng], {
+      draggable: true,
+      zIndexOffset: 1000,
+      icon: L.divIcon({
+        className: 'rotate-handle',
+        html: '<div style="width:18px;height:18px;border-radius:50%;background:#7c3aed;border:2px solid white;box-shadow:0 0 4px rgba(0,0,0,0.6);cursor:grab"></div>',
+        iconSize: [18, 18], iconAnchor: [9, 9],
+      }),
+    }).addTo(map);
+    layersRef.current.push(handle);
+
+    // Keep the handle above the current polygon center as the shape changes.
+    function positionHandle() {
+      const c = poly.getBounds().getCenter();
+      const halfLen = poly.getBounds().getNorth() - c.lat;
+      handle.setLatLng([c.lat + halfLen + 12 / mLat, c.lng]);
+    }
+    positionHandle();
+
+    handle.on('drag', () => {
+      const c = poly.getBounds().getCenter();
+      const hp = handle.getLatLng();
+      const dLat = (hp.lat - c.lat);
+      const dLng = (hp.lng - c.lng);
+      // Target angle of the handle from center (0 = north, clockwise).
+      const target = Math.atan2(dLng, dLat);
+      const prev = (handle as any)._prevAngle ?? target;
+      const delta = target - prev;
+      (handle as any)._prevAngle = target;
+      if (!delta) return;
+      // Rotate every polygon vertex about the center by delta (live).
+      const cosD = Math.cos(delta), sinD = Math.sin(delta);
+      const mLatL = METERS_PER_DEG_LAT;
+      const mLngL = METERS_PER_DEG_LAT * Math.cos((c.lat * Math.PI) / 180);
+      const ring = (poly.getLatLngs()[0] as L.LatLng[]).map((p) => {
+        const x = (p.lng - c.lng) * mLngL;
+        const y = (p.lat - c.lat) * mLatL;
+        const rx = x * cosD - y * sinD;
+        const ry = x * sinD + y * cosD;
+        return L.latLng(c.lat + ry / mLatL, c.lng + rx / mLngL);
+      });
+      poly.setLatLngs(ring);
+    });
+    handle.on('dragstart', () => { (handle as any)._prevAngle = undefined; });
+    handle.on('dragend', () => {
+      commitShape();
+    });
+
+    return () => {
+      layersRef.current.forEach((l) => map.removeLayer(l));
+      layersRef.current = [];
+    };
+    // Only rebuild when the selection changes, not on every geometry edit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedIndex, map]);
+
+  return null;
+}
+
+// Editable form shown in a building's popup: name, floors (=> height), width,
+// length, and rotation. Commits changes to the parent, which recomputes the
+// footprint polygon and persists.
+function BuildingEditor({
+  building, index, onApply, onDelete,
+}: {
+  building: DetectedFeature;
+  index: number;
+  onApply: (index: number, patch: Partial<DetectedFeature>) => void;
+  onDelete: (index: number) => void;
+}) {
+  const [name, setName] = useState(building.name ?? '');
+  const [floors, setFloors] = useState(building.floors ?? 1);
+  const [width, setWidth] = useState(Math.round(building.width_m ?? 24));
+  const [length, setLength] = useState(Math.round(building.length_m ?? 18));
+  const [angle, setAngle] = useState(Math.round(building.angle_deg ?? 0));
+
+  const apply = (patch: Partial<DetectedFeature>) => onApply(index, patch);
+
+  return (
+    <div className="text-xs min-w-[200px] text-slate-900">
+      <strong className="text-sm">Building</strong>
+      <div className="mt-2 space-y-2">
+        <div>
+          <label className="block text-slate-700 mb-0.5">Name</label>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={() => apply({ name })}
+            className="w-full border border-slate-300 rounded px-1.5 py-1"
+            placeholder="e.g. Gym"
+          />
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <label className="text-slate-700">Floors</label>
+          <div className="flex items-center gap-1">
+            <button className="px-2 py-0.5 bg-slate-200 rounded font-bold"
+              onClick={() => { const f = Math.max(1, floors - 1); setFloors(f); apply({ floors: f }); }}>-</button>
+            <span className="w-8 text-center font-semibold">{floors}</span>
+            <button className="px-2 py-0.5 bg-slate-200 rounded font-bold"
+              onClick={() => { const f = floors + 1; setFloors(f); apply({ floors: f }); }}>+</button>
+          </div>
+        </div>
+        <div className="text-slate-500 text-[10px] -mt-1">
+          Height = {floors} x 3 m = <span className="font-semibold">{floors * 3} m</span>
+        </div>
+        <div>
+          <label className="block text-slate-700 mb-0.5">Width: {width} m (E-W)</label>
+          <input type="range" min={4} max={200} value={width}
+            onChange={(e) => setWidth(parseInt(e.target.value))}
+            onMouseUp={() => apply({ width_m: width })}
+            onTouchEnd={() => apply({ width_m: width })}
+            className="w-full accent-blue-600" />
+        </div>
+        <div>
+          <label className="block text-slate-700 mb-0.5">Length: {length} m (N-S)</label>
+          <input type="range" min={4} max={200} value={length}
+            onChange={(e) => setLength(parseInt(e.target.value))}
+            onMouseUp={() => apply({ length_m: length })}
+            onTouchEnd={() => apply({ length_m: length })}
+            className="w-full accent-blue-600" />
+        </div>
+        <div>
+          <label className="block text-slate-700 mb-0.5">Rotation: {angle} deg</label>
+          <input type="range" min={0} max={180} value={angle}
+            onChange={(e) => setAngle(parseInt(e.target.value))}
+            onMouseUp={() => apply({ angle_deg: angle })}
+            onTouchEnd={() => apply({ angle_deg: angle })}
+            className="w-full accent-blue-600" />
+        </div>
+        <button
+          onClick={() => onDelete(index)}
+          className="mt-1 w-full px-2 py-1 bg-red-500 text-white font-semibold rounded hover:bg-red-600 transition"
+        >
+          Delete (not a building)
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSelect }: CampusMapProps) {
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [showDetected, setShowDetected] = useState(true);
   const [showBuildings, setShowBuildings] = useState(true);
   const [addingBuilding, setAddingBuilding] = useState(false);
+  const [editingShape, setEditingShape] = useState(false);
+  const [selectedBuildingIndex, setSelectedBuildingIndex] = useState<number | null>(null);
   const [detectedTrees, setDetectedTrees] = useState<DetectedFeature[]>([]);
   const [detectedBuildings, setDetectedBuildings] = useState<DetectedFeature[]>([]);
   const [detecting, setDetecting] = useState(true);
@@ -247,20 +500,29 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
   const addBuilding = (lat: number, lng: number) => {
     const width_m = 24;
     const length_m = 18;
-    const dLat = (length_m / 2) / METERS_PER_DEG_LAT;
-    const dLng = (width_m / 2) / (METERS_PER_DEG_LAT * Math.cos((lat * Math.PI) / 180));
-    const polygon: [number, number][] = [
-      [lat - dLat, lng - dLng],
-      [lat - dLat, lng + dLng],
-      [lat + dLat, lng + dLng],
-      [lat + dLat, lng - dLng],
-      [lat - dLat, lng - dLng],
-    ];
     const newBuilding: DetectedFeature = {
-      lat, lng, polygon, type: 'building',
-      width_m, length_m,
+      lat, lng, type: 'building',
+      width_m, length_m, angle_deg: 0,
+      name: 'New building', floors: 1,
+      polygon: rotatedRect(lat, lng, width_m, length_m, 0),
     };
     const updated = [...detectedBuildings, newBuilding];
+    setDetectedBuildings(updated);
+    persistBuildings(updated);
+  };
+
+  // Edit an existing building's name/floors/width/length/rotation; recompute
+  // its footprint polygon and persist.
+  const updateBuilding = (index: number, patch: Partial<DetectedFeature>) => {
+    const updated = detectedBuildings.map((b, i) => {
+      if (i !== index) return b;
+      const merged = { ...b, ...patch };
+      const w = merged.width_m ?? 24;
+      const l = merged.length_m ?? 18;
+      const ang = merged.angle_deg ?? 0;
+      merged.polygon = rotatedRect(merged.lat, merged.lng, w, l, ang);
+      return merged;
+    });
     setDetectedBuildings(updated);
     persistBuildings(updated);
   };
@@ -307,31 +569,41 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
         <ZoomControl position="bottomright" />
 
         {/* Heatmap overlay */}
-        <HeatmapOverlay heatmap={heatmap} visible={showHeatmap} bounds={bounds} />
+        <HeatmapOverlay heatmap={heatmap} visible={showHeatmap} bounds={bounds} buildings={detectedBuildings} />
 
         {/* Detected building rooftops (SAM segmentation) */}
         {showBuildings && detectedBuildings.map((b, i) => (
+          (editingShape && selectedBuildingIndex === i) ? null : (
           <Polygon
             key={`bldg-${i}`}
             positions={b.polygon as [number, number][]}
             pathOptions={{ color: '#1e3a8a', weight: 1.5, fillColor: '#3b82f6', fillOpacity: 0.35 }}
+            eventHandlers={{
+              click: () => { if (editingShape) setSelectedBuildingIndex(i); },
+            }}
           >
-            <Popup>
-              <div className="text-xs min-w-[150px]">
-                <strong className="text-sm">Detected rooftop</strong><br />
-                <div className="mt-1 space-y-0.5">
-                  <div>Footprint: <span className="font-medium">{b.width_m} x {b.length_m ?? b.height_m} m</span></div>
-                </div>
-                <button
-                  onClick={() => deleteBuilding(i)}
-                  className="mt-2 w-full px-2 py-1 bg-red-500 text-white text-xs font-semibold rounded hover:bg-red-600 transition"
-                >
-                  Delete (not a building)
-                </button>
-              </div>
+            {!editingShape && (
+            <Popup minWidth={220} maxWidth={260}>
+              <BuildingEditor
+                building={b}
+                index={i}
+                onApply={updateBuilding}
+                onDelete={deleteBuilding}
+              />
             </Popup>
+            )}
           </Polygon>
+          )
         ))}
+
+        {/* Interactive shape editing for the selected building */}
+        {editingShape && (
+          <BuildingEditLayer
+            selectedIndex={selectedBuildingIndex}
+            building={selectedBuildingIndex !== null ? detectedBuildings[selectedBuildingIndex] : null}
+            onChange={updateBuilding}
+          />
+        )}
 
         {/* Detected trees from satellite image recognition */}
         {showDetected && detectedTrees.map((tree, i) => {
@@ -404,12 +676,29 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
         >
           {addingBuilding ? 'Click map to add (done)' : 'Add Building'}
         </button>
+        <button
+          onClick={() => { setEditingShape(!editingShape); setShowBuildings(true); setSelectedBuildingIndex(null); }}
+          className={`px-3 py-2 rounded-lg shadow-lg text-xs font-semibold transition-all ${
+            editingShape ? 'bg-purple-600 text-white' : 'bg-white text-slate-700 border border-slate-200'
+          }`}
+        >
+          {editingShape ? 'Editing shapes (done)' : 'Edit Shape'}
+        </button>
       </div>
 
       {/* Add-building mode hint */}
       {addingBuilding && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-amber-500 text-white rounded-lg px-4 py-2 shadow-lg text-xs font-semibold">
           Click anywhere on the map to add a building. Click "Add Building" again to finish.
+        </div>
+      )}
+
+      {/* Edit-shape mode hint */}
+      {editingShape && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-purple-600 text-white rounded-lg px-4 py-2 shadow-lg text-xs font-semibold">
+          {selectedBuildingIndex === null
+            ? 'Click a building to select it, then drag its corners to resize or the purple dot to rotate.'
+            : 'Drag corners to resize/reshape, drag the shape to move, or the purple dot to rotate. Click "Edit Shape" to finish.'}
         </div>
       )}
 

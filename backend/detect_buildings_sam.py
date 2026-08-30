@@ -37,13 +37,13 @@ def load_generator():
     sam = sam_model_registry[MODEL_TYPE](checkpoint=MODEL_PATH)
     sam.to(device)
     print(f"SAM loaded on {device}")
-    # Denser sampling finds more rooftops; min area filters tiny specks.
+    # Denser sampling and stricter thresholds improve rooftop recall/precision.
     return SamAutomaticMaskGenerator(
         model=sam,
-        points_per_side=48,
-        pred_iou_thresh=0.85,
-        stability_score_thresh=0.88,
-        min_mask_region_area=300,
+        points_per_side=64,
+        pred_iou_thresh=0.86,
+        stability_score_thresh=0.90,
+        min_mask_region_area=250,
     )
 
 

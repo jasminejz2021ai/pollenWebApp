@@ -28,7 +28,7 @@ from engine.path_integration import (
     find_lowest_exposure_path,
     dose_to_risk_level,
 )
-from api.weather_service import fetch_current_wind
+from api.weather_service import fetch_current_wind, build_wind_override
 from api.pollen_service import fetch_pollen_forecast, get_current_upi, upi_to_clinical_level
 from data.campus_data import get_campus, CAMPUSES, DEFAULT_CAMPUS
 
@@ -56,6 +56,43 @@ def resolve_campus():
     return get_campus(request.args.get("campus", DEFAULT_CAMPUS))
 
 
+def resolve_receptor_height():
+    """Read the ?height= query param (breathing-zone height, m). Default 1.5,
+    clamped to a sensible 0.5-3.0 m range."""
+    h = request.args.get("height", 1.5, type=float)
+    if h is None:
+        h = 1.5
+    return max(0.5, min(3.0, h))
+
+
+def resolve_wind(campus, body=None):
+    """Return wind conditions. In test mode (explicit wind params supplied via
+    query string or JSON body) build the wind from those values; otherwise fetch
+    live conditions for the campus. Test params: wind_speed, wind_dir,
+    stability (optional), temperature (optional), humidity (optional)."""
+    src = body if body else request.args
+
+    def _get(key, cast=float):
+        if body is not None:
+            return body.get(key)
+        v = request.args.get(key)
+        return cast(v) if v is not None else None
+
+    speed = _get("wind_speed")
+    direction = _get("wind_dir")
+    if speed is not None and direction is not None:
+        stability = _get("stability", str)
+        temperature = _get("temperature")
+        humidity = _get("humidity")
+        return build_wind_override(
+            float(speed), float(direction),
+            stability_class=stability if stability else None,
+            temperature=float(temperature) if temperature is not None else None,
+            humidity=float(humidity) if humidity is not None else None,
+        )
+    return fetch_current_wind(campus["center_lat"], campus["center_lon"])
+
+
 def campus_static_path(campus_key: str, filename: str) -> str:
     """Path to a per-campus static file, falling back to the legacy top-level file."""
     base = os.path.dirname(__file__)
@@ -65,8 +102,17 @@ def campus_static_path(campus_key: str, filename: str) -> str:
     return os.path.join(base, 'static', filename)
 
 
-def compute_concentration_field(campus: dict, wind_data: dict, current_day: int) -> np.ndarray:
-    """Run the full dispersion simulation for a campus using detected trees."""
+def compute_concentration_field(campus: dict, wind_data: dict, current_day: int,
+                                receptor_height: float = 1.5) -> np.ndarray:
+    """Run the full dispersion simulation for a campus.
+
+    Uses SAM-detected trees and SAM-detected building rooftops from the campus
+    detection cache when available. Detected buildings carry a footprint
+    (width_m x length_m) but no measured height (satellite imagery is top-down),
+    so a default average height of 5 m is assumed for wake effects.
+    receptor_height is the breathing-zone height (m) at which concentration is
+    evaluated (default 1.5 m).
+    """
     center_lat = campus["center_lat"]
     center_lon = campus["center_lon"]
     mplat = METERS_PER_DEG_LAT
@@ -77,10 +123,12 @@ def compute_concentration_field(campus: dict, wind_data: dict, current_day: int)
 
     # Use detected trees if available; otherwise fall back to the campus flora set
     detected_trees = []
+    detected_buildings = []
     if os.path.exists(cache_path):
         with open(cache_path) as f:
             detect_data = json.load(f)
             detected_trees = detect_data.get("trees", [])
+            detected_buildings = detect_data.get("buildings", [])
 
     if detected_trees:
         tree_locations = []
@@ -96,11 +144,36 @@ def compute_concentration_field(campus: dict, wind_data: dict, current_day: int)
     if flora_matrix.shape[0] == 0:
         return np.zeros_like(GRID_X)
 
-    buildings = [
-        {"x": b["local_x"], "y": b["local_y"],
-         "width": b["width"], "height": b["height"], "length": b["length"]}
-        for b in campus["buildings"]
-    ]
+    # Buildings for the wake model: prefer SAM-detected rooftops (converted from
+    # lat/lng + footprint to local meters). Height is floors x 3 m when the
+    # building carries a floor count or explicit height, else a 5 m default.
+    DEFAULT_BUILDING_HEIGHT_M = 5.0
+    METERS_PER_FLOOR = 3.0
+    if detected_buildings:
+        buildings = []
+        for b in detected_buildings:
+            bx = (b["lng"] - center_lon) * mplon
+            by = (b["lat"] - center_lat) * mplat
+            width = b.get("width_m", 15.0)
+            length = b.get("length_m", b.get("height_m", 15.0))
+            if b.get("floors"):
+                height = float(b["floors"]) * METERS_PER_FLOOR
+            elif b.get("height"):
+                height = float(b["height"])
+            else:
+                height = DEFAULT_BUILDING_HEIGHT_M
+            buildings.append({
+                "x": bx, "y": by,
+                "width": width,
+                "length": length,
+                "height": height,
+            })
+    else:
+        buildings = [
+            {"x": b["local_x"], "y": b["local_y"],
+             "width": b["width"], "height": b["height"], "length": b["length"]}
+            for b in campus["buildings"]
+        ]
 
     concentration = superpose_sources(
         GRID_X, GRID_Y,
@@ -110,15 +183,60 @@ def compute_concentration_field(campus: dict, wind_data: dict, current_day: int)
         buildings,
         current_day,
         wind_data.get("stability_class", "D"),
+        receptor_height,
     )
 
-    # Zero out concentration over building rooftops
-    if os.path.exists(mask_path):
+    # Zero out concentration over building footprints: at breathing height
+    # inside a building there is no outdoor pollen exposure. Build the mask
+    # directly from the detected building polygons so it always matches the
+    # buildings shown on the map (works for every campus, no stale .npy needed).
+    if detected_buildings:
+        building_mask = _rasterize_buildings(detected_buildings, center_lat, center_lon, mplat, mplon)
+        concentration[building_mask] = 0.0
+    elif os.path.exists(mask_path):
         building_mask = np.load(mask_path)
         if building_mask.shape == concentration.shape:
             concentration[building_mask] = 0.0
 
     return concentration
+
+
+def _rasterize_buildings(detected_buildings, center_lat, center_lon, mplat, mplon):
+    """Return a boolean grid mask that is True inside any detected building
+    footprint. Polygons (lat/lng) are converted to local meters and tested
+    against the concentration grid with a vectorized point-in-polygon test."""
+    mask = np.zeros_like(GRID_X, dtype=bool)
+    gx = GRID_X.ravel()
+    gy = GRID_Y.ravel()
+    inside = np.zeros(gx.shape, dtype=bool)
+
+    for b in detected_buildings:
+        poly = b.get("polygon")
+        if not poly or len(poly) < 3:
+            continue
+        # Convert polygon corners (lat, lng) to local meters (x=E, y=N).
+        xs = np.array([(pt[1] - center_lon) * mplon for pt in poly])
+        ys = np.array([(pt[0] - center_lat) * mplat for pt in poly])
+        # Quick bounding-box reject for speed.
+        in_bbox = (gx >= xs.min()) & (gx <= xs.max()) & (gy >= ys.min()) & (gy <= ys.max())
+        if not np.any(in_bbox):
+            continue
+        idx = np.where(in_bbox)[0]
+        px, py = gx[idx], gy[idx]
+        # Ray-casting point-in-polygon, vectorized over candidate points.
+        n = len(xs)
+        hit = np.zeros(px.shape, dtype=bool)
+        j = n - 1
+        for i in range(n):
+            xi, yi, xj, yj = xs[i], ys[i], xs[j], ys[j]
+            cond = ((yi > py) != (yj > py)) & (
+                px < (xj - xi) * (py - yi) / (yj - yi + 1e-12) + xi)
+            hit ^= cond
+            j = i
+        inside[idx] |= hit
+
+    mask = inside.reshape(GRID_X.shape)
+    return mask
 
 
 @app.route("/api/health", methods=["GET"])
@@ -162,9 +280,10 @@ def get_concentration():
     """
     campus = resolve_campus()
     current_day = request.args.get("day", day_of_year(), type=int)
-    wind_data = fetch_current_wind(campus["center_lat"], campus["center_lon"])
+    wind_data = resolve_wind(campus)
 
-    concentration = compute_concentration_field(campus, wind_data, current_day)
+    concentration = compute_concentration_field(campus, wind_data, current_day,
+                                                resolve_receptor_height())
 
     # Downsample for JSON transfer (every 4th point)
     step = max(1, GRID_SIZE // 25)
@@ -192,8 +311,9 @@ def get_heatmap():
     """
     current_day = request.args.get("day", day_of_year(), type=int)
     campus = resolve_campus()
-    wind_data = fetch_current_wind(campus["center_lat"], campus["center_lon"])
-    concentration = compute_concentration_field(campus, wind_data, current_day)
+    wind_data = resolve_wind(campus)
+    concentration = compute_concentration_field(campus, wind_data, current_day,
+                                                resolve_receptor_height())
 
     center_lat = campus["center_lat"]
     center_lon = campus["center_lon"]
@@ -341,7 +461,7 @@ def update_detection():
 def get_weather():
     """Get current weather conditions. Query param: campus"""
     campus = resolve_campus()
-    return jsonify(fetch_current_wind(campus["center_lat"], campus["center_lon"]))
+    return jsonify(resolve_wind(campus))
 
 
 @app.route("/api/pollen-forecast", methods=["GET"])
@@ -373,9 +493,10 @@ def calculate_path_exposure():
 
     path_points = [tuple(p) for p in body["path"]]
     current_day = body.get("day", day_of_year())
-    wind_data = fetch_current_wind(campus["center_lat"], campus["center_lon"])
+    wind_data = resolve_wind(campus, body)
 
-    concentration = compute_concentration_field(campus, wind_data, current_day)
+    height = body.get("height", resolve_receptor_height())
+    concentration = compute_concentration_field(campus, wind_data, current_day, height)
     result = path_exposure_dose(path_points, concentration, GRID_X, GRID_Y)
     result["wind"] = wind_data
     result["current_day"] = current_day
@@ -397,9 +518,10 @@ def get_optimal_route():
     start = tuple(body["start"])
     end = tuple(body["end"])
     current_day = body.get("day", day_of_year())
-    wind_data = fetch_current_wind(campus["center_lat"], campus["center_lon"])
+    wind_data = resolve_wind(campus, body)
 
-    concentration = compute_concentration_field(campus, wind_data, current_day)
+    height = body.get("height", resolve_receptor_height())
+    concentration = compute_concentration_field(campus, wind_data, current_day, height)
 
     direct_path = [start, end]
     direct_dose = path_exposure_dose(direct_path, concentration, GRID_X, GRID_Y)
@@ -430,15 +552,16 @@ def get_advisory():
     Returns personalized risk assessment and routing recommendations.
     """
     campus = resolve_campus()
-    current_day = day_of_year()
-    wind_data = fetch_current_wind(campus["center_lat"], campus["center_lon"])
+    current_day = request.args.get("day", day_of_year(), type=int)
+    wind_data = resolve_wind(campus)
     pollen_upi = get_current_upi(campus["center_lat"], campus["center_lon"])
     active = get_active_species(current_day)
 
     max_upi = max(pollen_upi.get("tree_upi", 0), pollen_upi.get("grass_upi", 0), pollen_upi.get("weed_upi", 0))
     clinical = upi_to_clinical_level(max_upi)
 
-    concentration = compute_concentration_field(campus, wind_data, current_day)
+    concentration = compute_concentration_field(campus, wind_data, current_day,
+                                                resolve_receptor_height())
 
     # Evaluate all standard paths
     path_advisories = []

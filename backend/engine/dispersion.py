@@ -142,14 +142,26 @@ def cavity_concentration(
     building_height: float,
     building_width: float,
     aerodynamic_fraction: float = 0.6,
+    max_concentration: float = None,
 ) -> float:
     """
     Uniform cavity concentration for near-wake zone (x' <= 3·H_b):
     C_cavity = Q / (B_e · H_b · W_b · u)
+
+    The result is clamped to max_concentration when provided. This guards
+    against unrealistically large values when the assumed building height is
+    small (H_b appears in the denominator), which otherwise lets many stacked
+    cavity zones produce non-physical peaks.
     """
     if wind_speed < 0.5:
         wind_speed = 0.5
-    return emission_rate / (aerodynamic_fraction * building_height * building_width * wind_speed)
+    # Enforce a minimum effective height so a small assumed height cannot make
+    # the cavity concentration diverge.
+    h_eff = max(building_height, 5.0)
+    c = emission_rate / (aerodynamic_fraction * h_eff * building_width * wind_speed)
+    if max_concentration is not None:
+        c = min(c, max_concentration)
+    return c
 
 
 def gaussian_plume_with_downwash(
@@ -164,6 +176,7 @@ def gaussian_plume_with_downwash(
     source_height: float = 5.0,
     receptor_height: float = 1.5,
     stability_class: str = "D",
+    cavity_cap: float = 500.0,
 ) -> np.ndarray:
     """
     Gaussian plume with building wake modifications.
@@ -190,31 +203,47 @@ def gaussian_plume_with_downwash(
 
     sigma_y, sigma_z = dispersion_sigmas(x_prime[mask], stability_class)
 
-    # Check building wake zones and apply modifications
-    wake_mask = np.zeros(np.sum(mask), dtype=bool)
+    # Track, per grid point, whether it lies in ANY building's near-wake cavity
+    # and the cavity concentration of the building responsible for it. Each
+    # building writes only its own wake zone (nearest wins on overlap), so the
+    # distance from each nearby building governs where its cavity applies.
+    n_masked = int(np.sum(mask))
+    wake_mask = np.zeros(n_masked, dtype=bool)
+    cavity_value = np.zeros(n_masked, dtype=float)
+    x_masked = x_prime[mask]
+    y_masked = y_prime[mask]
 
     for bldg in buildings:
         bx, by = bldg["x"], bldg["y"]
-        bw, bh, bl = bldg["width"], bldg["height"], bldg["length"]
+        bw, bh = bldg["width"], bldg["height"]
 
-        # Building position in wind-aligned frame relative to source
+        # Building position in the wind-aligned frame relative to this source
         bdx = bx - source_x
         bdy = by - source_y
         bx_prime = bdx * ux + bdy * uy
         by_prime = -bdx * uy + bdy * ux
 
-        # Points in building near-wake: within 3*H_b downwind of building rear
-        x_masked = x_prime[mask]
-        y_masked = y_prime[mask]
-
+        # Near-wake cavity: within 3*H_b downwind of the building and within
+        # half its width crosswind.
         in_wake = (
             (x_masked > bx_prime)
             & (x_masked < bx_prime + 3.0 * bh)
             & (np.abs(y_masked - by_prime) < bw / 2.0)
         )
-        wake_mask |= in_wake
+        if np.any(in_wake):
+            # Cap the cavity value at the calibrated spring-peak reference so a
+            # small assumed building height cannot produce a peak larger than
+            # the model's open-field maximum (a cavity dilutes, not concentrates
+            # beyond the source field).
+            c_cav = cavity_concentration(
+                emission_rate, wind_speed, bh, bw,
+                max_concentration=cavity_cap,
+            )
+            cavity_value[in_wake] = np.maximum(cavity_value[in_wake], c_cav)
+            wake_mask |= in_wake
 
-        # Apply Schulman-Scire to non-cavity zones near buildings
+        # Schulman-Scire dispersion inflation in the near-building zone (out to
+        # 10*H_b downwind) outside the cavity.
         near_building = (
             (x_masked > bx_prime)
             & (x_masked < bx_prime + 10.0 * bh)
@@ -236,13 +265,9 @@ def gaussian_plume_with_downwash(
     denom = 2.0 * np.pi * wind_mag * sigma_y * sigma_z
     plume_values = (emission_rate / denom) * lateral * vertical
 
-    # Override cavity zones with uniform concentration
+    # Override cavity zones with each responsible building's uniform value.
     if np.any(wake_mask):
-        for bldg in buildings:
-            c_cav = cavity_concentration(
-                emission_rate, wind_speed, bldg["height"], bldg["width"]
-            )
-            plume_values[wake_mask] = c_cav
+        plume_values[wake_mask] = cavity_value[wake_mask]
 
     concentration[mask] = plume_values
     return concentration

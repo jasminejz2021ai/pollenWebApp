@@ -3,10 +3,10 @@ import {
   fetchHeatmap, fetchFlora, fetchBuildings, fetchWeather,
   fetchPollenForecast, fetchAdvisory,
   HeatmapResponse, FloraItem, ActiveSpecies, Building, WindData,
-  PollenForecast, Advisory,
+  PollenForecast, Advisory, TestParams,
 } from '../utils/api';
 
-export function usePollenData(campus: string) {
+export function usePollenData(campus: string, height: number = 1.5, test?: TestParams) {
   const [heatmap, setHeatmap] = useState<HeatmapResponse | null>(null);
   const [flora, setFlora] = useState<FloraItem[]>([]);
   const [activeSpecies, setActiveSpecies] = useState<ActiveSpecies[]>([]);
@@ -22,12 +22,12 @@ export function usePollenData(campus: string) {
       setLoading(true);
       const [heatmapData, floraData, buildingData, weatherData, forecastData, advisoryData] =
         await Promise.all([
-          fetchHeatmap(campus),
+          fetchHeatmap(campus, height, test),
           fetchFlora(campus),
           fetchBuildings(campus),
-          fetchWeather(campus),
+          fetchWeather(campus, test),
           fetchPollenForecast(campus),
-          fetchAdvisory(campus),
+          fetchAdvisory(campus, height, test),
         ]);
 
       setHeatmap(heatmapData);
@@ -43,7 +43,7 @@ export function usePollenData(campus: string) {
     } finally {
       setLoading(false);
     }
-  }, [campus]);
+  }, [campus, height, JSON.stringify(test)]);
 
   useEffect(() => {
     refreshData();

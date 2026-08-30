@@ -89,11 +89,12 @@ def classify_tree_generic(radius_m: float) -> str:
     return "chinese_elm"
 
 
-def fetch_satellite_tile(zoom: int = 17, bounds: dict = None) -> np.ndarray:
+def fetch_satellite_tile(zoom: int = 17, bounds: dict = None, base_size: int = 1600) -> np.ndarray:
     """
     Fetch satellite imagery from Esri World Imagery for the given bounds.
     Returns RGB numpy array with correct geographic proportions.
     bounds: optional dict {north, south, east, west}; defaults to Gunn globals.
+    base_size: longest image edge in pixels (higher = sharper, larger file).
     """
     north = bounds["north"] if bounds else NORTH
     south = bounds["south"] if bounds else SOUTH
@@ -108,7 +109,6 @@ def fetch_satellite_tile(zoom: int = 17, bounds: dict = None) -> np.ndarray:
     width_m = abs(lng_span) * 111320 * math.cos(math.radians((north + south) / 2))
     
     # Image dimensions matching geographic aspect ratio
-    base_size = 1600
     if width_m > height_m:
         width = base_size
         height = int(base_size * height_m / width_m)
@@ -124,7 +124,8 @@ def fetch_satellite_tile(zoom: int = 17, bounds: dict = None) -> np.ndarray:
     )
 
     try:
-        response = requests.get(url, timeout=30)
+        # Longer timeout: large (high-res) exports can take a while to render.
+        response = requests.get(url, timeout=120)
         response.raise_for_status()
         img = Image.open(BytesIO(response.content)).convert("RGB")
         return np.array(img)

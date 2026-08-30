@@ -6,9 +6,11 @@ interface HeaderProps {
   campuses: Campus[];
   campusKey: string;
   onCampusChange: (key: string) => void;
+  receptorHeight: number;
+  onHeightChange: (h: number) => void;
 }
 
-export default function Header({ weather, activeSpecies, campuses, campusKey, onCampusChange }: HeaderProps) {
+export default function Header({ weather, activeSpecies, campuses, campusKey, onCampusChange, receptorHeight, onHeightChange }: HeaderProps) {
   const windDirectionText = (deg: number) => {
     const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
     return dirs[Math.round(deg / 45) % 8];
@@ -49,6 +51,22 @@ export default function Header({ weather, activeSpecies, campuses, campusKey, on
             ))}
           </div>
         )}
+
+        {/* Breathing-zone (receptor) height selector */}
+        <div className="flex items-center gap-1.5">
+          <label htmlFor="height-select" className="text-xs text-slate-500">Breathing height</label>
+          <select
+            id="height-select"
+            value={receptorHeight}
+            onChange={(e) => onHeightChange(parseFloat(e.target.value))}
+            className="text-sm font-semibold text-slate-700 border border-slate-200 rounded-md px-2 py-1 bg-white"
+            title="Height above ground at which pollen exposure is evaluated"
+          >
+            <option value={1.5}>1.5 m</option>
+            <option value={1.8}>1.8 m</option>
+            <option value={2.0}>2.0 m</option>
+          </select>
+        </div>
 
         {activeSpecies.length > 0 && (
           <div className="flex items-center gap-2">

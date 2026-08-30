@@ -68,6 +68,32 @@ def fetch_current_wind(lat: Optional[float] = None, lon: Optional[float] = None,
         return _mock_wind_data()
 
 
+def build_wind_override(speed: float, direction: float,
+                        stability_class: Optional[str] = None,
+                        temperature: Optional[float] = None,
+                        humidity: Optional[float] = None) -> Dict:
+    """Build a wind_data dict from explicit values (test/simulation mode).
+
+    Derives u/v components and, when stability_class is not given, estimates it
+    from wind speed (assuming clear skies). temperature/humidity are carried for
+    display only; they do not affect the dispersion computation.
+    """
+    u, v = _wind_components(speed, direction)
+    if not stability_class:
+        stability_class = _estimate_stability_class(speed, 20, temperature or 18.0)
+    return {
+        "speed": speed,
+        "direction": direction,
+        "u": round(u, 3),
+        "v": round(v, 3),
+        "temperature": temperature if temperature is not None else 18.0,
+        "humidity": humidity if humidity is not None else 55,
+        "stability_class": stability_class,
+        "timestamp": datetime.utcnow().isoformat(),
+        "source": "test-mode",
+    }
+
+
 def _wind_components(speed: float, direction_deg: float) -> Tuple[float, float]:
     """Convert wind speed/direction to u,v grid components."""
     import numpy as np

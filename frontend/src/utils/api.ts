@@ -10,8 +10,24 @@ export interface Campus {
   boundary: Array<{ lat: number; lng: number }>;
 }
 
-function q(campus?: string): string {
-  return campus ? `?campus=${encodeURIComponent(campus)}` : '';
+export interface TestParams {
+  day?: number;        // Julian day of year (1-365)
+  wind_speed?: number; // m/s
+  wind_dir?: number;   // degrees from North
+  stability?: string;  // Pasquill-Gifford A-F
+}
+
+function q(campus?: string, height?: number, test?: TestParams): string {
+  const params: string[] = [];
+  if (campus) params.push(`campus=${encodeURIComponent(campus)}`);
+  if (height != null) params.push(`height=${encodeURIComponent(height)}`);
+  if (test) {
+    if (test.day != null) params.push(`day=${test.day}`);
+    if (test.wind_speed != null) params.push(`wind_speed=${test.wind_speed}`);
+    if (test.wind_dir != null) params.push(`wind_dir=${test.wind_dir}`);
+    if (test.stability) params.push(`stability=${test.stability}`);
+  }
+  return params.length ? `?${params.join('&')}` : '';
 }
 
 export interface WindData {
@@ -128,8 +144,8 @@ export async function fetchCampuses(): Promise<{ campuses: Campus[]; default: st
   return res.json();
 }
 
-export async function fetchHeatmap(campus?: string): Promise<HeatmapResponse> {
-  const res = await fetch(`${API_BASE}/heatmap${q(campus)}`);
+export async function fetchHeatmap(campus?: string, height?: number, test?: TestParams): Promise<HeatmapResponse> {
+  const res = await fetch(`${API_BASE}/heatmap${q(campus, height, test)}`);
   return res.json();
 }
 
@@ -143,8 +159,8 @@ export async function fetchBuildings(campus?: string): Promise<{ buildings: Buil
   return res.json();
 }
 
-export async function fetchWeather(campus?: string): Promise<WindData> {
-  const res = await fetch(`${API_BASE}/weather${q(campus)}`);
+export async function fetchWeather(campus?: string, test?: TestParams): Promise<WindData> {
+  const res = await fetch(`${API_BASE}/weather${q(campus, undefined, test)}`);
   return res.json();
 }
 
@@ -175,7 +191,7 @@ export async function fetchOptimalRoute(
   return res.json();
 }
 
-export async function fetchAdvisory(campus?: string): Promise<Advisory> {
-  const res = await fetch(`${API_BASE}/advisory${q(campus)}`);
+export async function fetchAdvisory(campus?: string, height?: number, test?: TestParams): Promise<Advisory> {
+  const res = await fetch(`${API_BASE}/advisory${q(campus, height, test)}`);
   return res.json();
 }
