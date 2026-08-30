@@ -316,14 +316,17 @@ def superpose_sources(
         source_height = 6.0
 
         if buildings:
-            # Only consider buildings near this source; a building far away has
-            # no wake effect here. This turns the O(sources x buildings) inner
-            # loop into O(sources x few), the key speedup for dense campuses.
-            nearby = [
-                b for b in buildings
-                if (b["x"] - sx) ** 2 + (b["y"] - sy) ** 2 < 250.0 ** 2
-            ]
-            if nearby:
+            # Only consider buildings close to this source; a building far away
+            # has negligible wake effect here. Restricting to the nearest few
+            # keeps this fast even with thousands of detected buildings.
+            near = []
+            for b in buildings:
+                d2 = (b["x"] - sx) ** 2 + (b["y"] - sy) ** 2
+                if d2 < 120.0 ** 2:
+                    near.append((d2, b))
+            if near:
+                near.sort(key=lambda z: z[0])
+                nearby = [b for _, b in near[:5]]
                 c_i = gaussian_plume_with_downwash(
                     x_grid, y_grid, sx, sy,
                     effective_emission, wind_speed, wind_dir_deg,
