@@ -316,11 +316,25 @@ def superpose_sources(
         source_height = 6.0
 
         if buildings:
-            c_i = gaussian_plume_with_downwash(
-                x_grid, y_grid, sx, sy,
-                effective_emission, wind_speed, wind_dir_deg,
-                buildings, source_height, receptor_height, stability_class,
-            )
+            # Only consider buildings near this source; a building far away has
+            # no wake effect here. This turns the O(sources x buildings) inner
+            # loop into O(sources x few), the key speedup for dense campuses.
+            nearby = [
+                b for b in buildings
+                if (b["x"] - sx) ** 2 + (b["y"] - sy) ** 2 < 250.0 ** 2
+            ]
+            if nearby:
+                c_i = gaussian_plume_with_downwash(
+                    x_grid, y_grid, sx, sy,
+                    effective_emission, wind_speed, wind_dir_deg,
+                    nearby, source_height, receptor_height, stability_class,
+                )
+            else:
+                c_i = gaussian_plume(
+                    x_grid, y_grid, sx, sy,
+                    effective_emission, wind_speed, wind_dir_deg,
+                    source_height, receptor_height, stability_class,
+                )
         else:
             c_i = gaussian_plume(
                 x_grid, y_grid, sx, sy,
