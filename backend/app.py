@@ -15,7 +15,8 @@ from datetime import date
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
-from engine.dispersion import superpose_sources, wind_components
+from engine.dispersion import superpose_sources, superpose_sources_varwind, wind_components
+from engine.potential_flow import solve_potential_flow
 from engine.phenology import (
     BOTANICAL_CATALOG,
     build_flora_matrix,
@@ -65,6 +66,13 @@ def resolve_receptor_height():
     return max(0.5, min(3.0, h))
 
 
+def resolve_potential_flow():
+    """Read the ?flow= query param. Defaults to the 2D potential-flow wind
+    field diverted around buildings; pass flow=uniform to opt out (uniform wind
+    + empirical wake model)."""
+    return request.args.get("flow", "potential") != "uniform"
+
+
 def resolve_wind(campus, body=None):
     """Return wind conditions. In test mode (explicit wind params supplied via
     query string or JSON body) build the wind from those values; otherwise fetch
@@ -103,7 +111,8 @@ def campus_static_path(campus_key: str, filename: str) -> str:
 
 
 def compute_concentration_field(campus: dict, wind_data: dict, current_day: int,
-                                receptor_height: float = 1.5) -> np.ndarray:
+                                receptor_height: float = 1.5,
+                                use_potential_flow: bool = False) -> np.ndarray:
     """Run the full dispersion simulation for a campus.
 
     Uses SAM-detected trees and SAM-detected building rooftops from the campus
@@ -175,16 +184,28 @@ def compute_concentration_field(campus: dict, wind_data: dict, current_day: int,
             for b in campus["buildings"]
         ]
 
-    concentration = superpose_sources(
-        GRID_X, GRID_Y,
-        flora_matrix,
-        wind_data["speed"],
-        wind_data["direction"],
-        buildings,
-        current_day,
-        wind_data.get("stability_class", "D"),
-        receptor_height,
-    )
+    if use_potential_flow and detected_buildings:
+        # Physically-computed 2D potential-flow wind field diverted around the
+        # building footprints, then plumes advected along the local flow.
+        building_mask = _rasterize_buildings(detected_buildings, center_lat, center_lon, mplat, mplon)
+        u_inf, v_inf = wind_components(wind_data["speed"], wind_data["direction"])
+        u_field, v_field = solve_potential_flow(building_mask, u_inf, v_inf)
+        concentration = superpose_sources_varwind(
+            GRID_X, GRID_Y, flora_matrix, u_field, v_field,
+            GRID_EXTENT_X, GRID_EXTENT_Y, current_day,
+            wind_data.get("stability_class", "D"), receptor_height,
+        )
+    else:
+        concentration = superpose_sources(
+            GRID_X, GRID_Y,
+            flora_matrix,
+            wind_data["speed"],
+            wind_data["direction"],
+            buildings,
+            current_day,
+            wind_data.get("stability_class", "D"),
+            receptor_height,
+        )
 
     # Zero out concentration over building footprints: at breathing height
     # inside a building there is no outdoor pollen exposure. Build the mask
@@ -283,7 +304,8 @@ def get_concentration():
     wind_data = resolve_wind(campus)
 
     concentration = compute_concentration_field(campus, wind_data, current_day,
-                                                resolve_receptor_height())
+                                                resolve_receptor_height(),
+                                                resolve_potential_flow())
 
     # Downsample for JSON transfer (every 4th point)
     step = max(1, GRID_SIZE // 25)
@@ -313,7 +335,8 @@ def get_heatmap():
     campus = resolve_campus()
     wind_data = resolve_wind(campus)
     concentration = compute_concentration_field(campus, wind_data, current_day,
-                                                resolve_receptor_height())
+                                                resolve_receptor_height(),
+                                                resolve_potential_flow())
 
     center_lat = campus["center_lat"]
     center_lon = campus["center_lon"]
@@ -561,7 +584,8 @@ def get_advisory():
     clinical = upi_to_clinical_level(max_upi)
 
     concentration = compute_concentration_field(campus, wind_data, current_day,
-                                                resolve_receptor_height())
+                                                resolve_receptor_height(),
+                                                resolve_potential_flow())
 
     # Evaluate all standard paths
     path_advisories = []

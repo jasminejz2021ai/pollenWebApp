@@ -540,7 +540,53 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
   }, [campusKey]);
 
   return (
-    <div className="w-full h-full relative" style={{ minHeight: '500px' }}>
+    <div className="w-full h-full flex flex-col" style={{ minHeight: '500px' }}>
+      {/* Toolbar (outside the map) */}
+      <div className="flex flex-wrap items-center gap-2 px-3 py-2 bg-white border-b border-slate-200">
+        <button
+          onClick={() => setShowHeatmap(!showHeatmap)}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+            showHeatmap ? 'bg-red-500 text-white' : 'bg-slate-100 text-slate-700 border border-slate-200'
+          }`}
+        >
+          {showHeatmap ? 'Hide Heatmap' : 'Show Heatmap'}
+        </button>
+        <button
+          onClick={() => setShowDetected(!showDetected)}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+            showDetected ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-700 border border-slate-200'
+          }`}
+        >
+          {showDetected ? 'Hide Trees' : 'Show Trees'}
+        </button>
+        <button
+          onClick={() => setShowBuildings(!showBuildings)}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+            showBuildings ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700 border border-slate-200'
+          }`}
+        >
+          {showBuildings ? 'Hide Buildings' : 'Show Buildings'}
+        </button>
+        <div className="w-px h-5 bg-slate-200 mx-1" />
+        <button
+          onClick={() => { setAddingBuilding(!addingBuilding); setShowBuildings(true); }}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+            addingBuilding ? 'bg-amber-500 text-white' : 'bg-slate-100 text-slate-700 border border-slate-200'
+          }`}
+        >
+          {addingBuilding ? 'Click map to add (done)' : 'Add Building'}
+        </button>
+        <button
+          onClick={() => { setEditingShape(!editingShape); setShowBuildings(true); setSelectedBuildingIndex(null); }}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+            editingShape ? 'bg-purple-600 text-white' : 'bg-slate-100 text-slate-700 border border-slate-200'
+          }`}
+        >
+          {editingShape ? 'Editing shapes (done)' : 'Edit Shape'}
+        </button>
+      </div>
+
+      <div className="flex-1 relative">
       <MapContainer
         center={center}
         zoom={16}
@@ -642,50 +688,6 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
         })}
       </MapContainer>
 
-      {/* Controls */}
-      <div className="absolute top-4 right-4 z-[1000] flex flex-col gap-2">
-        <button
-          onClick={() => setShowHeatmap(!showHeatmap)}
-          className={`px-3 py-2 rounded-lg shadow-lg text-xs font-semibold transition-all ${
-            showHeatmap ? 'bg-red-500 text-white' : 'bg-white text-slate-700 border border-slate-200'
-          }`}
-        >
-          {showHeatmap ? 'Hide Heatmap' : 'Show Heatmap'}
-        </button>
-        <button
-          onClick={() => setShowDetected(!showDetected)}
-          className={`px-3 py-2 rounded-lg shadow-lg text-xs font-semibold transition-all ${
-            showDetected ? 'bg-emerald-500 text-white' : 'bg-white text-slate-700 border border-slate-200'
-          }`}
-        >
-          {showDetected ? 'Hide Detection' : 'Show Detection'}
-        </button>
-        <button
-          onClick={() => setShowBuildings(!showBuildings)}
-          className={`px-3 py-2 rounded-lg shadow-lg text-xs font-semibold transition-all ${
-            showBuildings ? 'bg-blue-600 text-white' : 'bg-white text-slate-700 border border-slate-200'
-          }`}
-        >
-          {showBuildings ? 'Hide Buildings' : 'Show Buildings'}
-        </button>
-        <button
-          onClick={() => { setAddingBuilding(!addingBuilding); setShowBuildings(true); }}
-          className={`px-3 py-2 rounded-lg shadow-lg text-xs font-semibold transition-all ${
-            addingBuilding ? 'bg-amber-500 text-white' : 'bg-white text-slate-700 border border-slate-200'
-          }`}
-        >
-          {addingBuilding ? 'Click map to add (done)' : 'Add Building'}
-        </button>
-        <button
-          onClick={() => { setEditingShape(!editingShape); setShowBuildings(true); setSelectedBuildingIndex(null); }}
-          className={`px-3 py-2 rounded-lg shadow-lg text-xs font-semibold transition-all ${
-            editingShape ? 'bg-purple-600 text-white' : 'bg-white text-slate-700 border border-slate-200'
-          }`}
-        >
-          {editingShape ? 'Editing shapes (done)' : 'Edit Shape'}
-        </button>
-      </div>
-
       {/* Add-building mode hint */}
       {addingBuilding && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-amber-500 text-white rounded-lg px-4 py-2 shadow-lg text-xs font-semibold">
@@ -745,6 +747,7 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
           </p>
         </div>
       )}
+      </div>
     </div>
   );
 }

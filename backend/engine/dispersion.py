@@ -348,3 +348,69 @@ def superpose_sources(
         total_concentration += c_i
 
     return total_concentration
+
+
+def _wind_speed_dir_from_uv(u: float, v: float):
+    """Convert grid velocity components (u=+east, v=+north) back to a
+    meteorological speed and direction (degrees FROM which wind blows)."""
+    speed = float(np.hypot(u, v))
+    # Direction the wind is blowing TOWARD, math angle:
+    toward = np.degrees(np.arctan2(v, u))
+    # Meteorological "from" direction: invert and convert from math to compass.
+    met_from = (270.0 - toward) % 360.0
+    return speed, met_from
+
+
+def superpose_sources_varwind(
+    x_grid, y_grid, flora_matrix, u_field, v_field,
+    grid_extent_x, grid_extent_y, current_day,
+    stability_class="D", receptor_height=1.5, min_speed=0.5,
+):
+    """Superpose plumes using a spatially-varying wind field.
+
+    For each source, the local wind (sampled from u_field/v_field at the
+    source's grid cell) orients and scales its Gaussian plume, so plumes follow
+    the flow diverted around buildings. This is the potential-flow coupling:
+    the wind field already encodes deflection around obstacles.
+    """
+    total = np.zeros_like(x_grid, dtype=float)
+    ny, nx = u_field.shape
+
+    def to_cell(sx, sy):
+        # Map local meters to grid indices.
+        gx = int(round((sx + grid_extent_x) / (2 * grid_extent_x) * (nx - 1)))
+        gy = int(round((sy + grid_extent_y) / (2 * grid_extent_y) * (ny - 1)))
+        gx = min(max(gx, 0), nx - 1)
+        gy = min(max(gy, 0), ny - 1)
+        return gy, gx
+
+    for i in range(flora_matrix.shape[0]):
+        sx, sy = flora_matrix[i, 0], flora_matrix[i, 1]
+        q_base = flora_matrix[i, 2]
+        potency = flora_matrix[i, 3]
+        start_day = int(flora_matrix[i, 4])
+        end_day = int(flora_matrix[i, 5])
+        peak_day = flora_matrix[i, 6]
+        sigma_t = flora_matrix[i, 7]
+
+        if current_day < start_day or current_day > end_day:
+            continue
+        gamma = np.exp(-((current_day - peak_day) ** 2) / (2.0 * sigma_t**2))
+        effective_emission = q_base * potency * gamma
+        if effective_emission < 0.01:
+            continue
+
+        gy, gx = to_cell(sx, sy)
+        lu, lv = float(u_field[gy, gx]), float(v_field[gy, gx])
+        speed, wind_dir = _wind_speed_dir_from_uv(lu, lv)
+        if speed < min_speed:
+            speed = min_speed
+
+        c_i = gaussian_plume(
+            x_grid, y_grid, sx, sy,
+            effective_emission, speed, wind_dir,
+            6.0, receptor_height, stability_class,
+        )
+        total += c_i
+
+    return total
