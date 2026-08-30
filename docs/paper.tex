@@ -18,7 +18,7 @@
 
 \title{Real-Time Campus Aeroallergen Dispersion Modeling Using Gaussian Plume Theory and Satellite-Based Vegetation Detection}
 
-\author[1]{Hao Gao}
+\author[1]{Jasmine J. Zhang}
 \affil[1]{Henry M. Gunn High School, Palo Alto, CA 94306, USA}
 
 \date{June 2026}
@@ -28,7 +28,7 @@
 \maketitle
 
 \begin{abstract}
-We present Campus AeroAllergen Mapping (CAM), a web-based system for modeling hyperlocal pollen dispersion across a school campus at meter-scale resolution. The framework integrates a steady-state Gaussian plume model with Schulman-Scire building downwash corrections to compute pollen concentration at student breathing height ($z = 1.5$~m). Pollen sources are automatically identified from high-resolution satellite imagery using color-based segmentation with watershed splitting, refined through iterative human-in-the-loop calibration. Temporal emission variability is captured by species-specific Gaussian phenological gate functions. Building footprints detected from satellite imagery define indoor exclusion zones where concentration is zeroed. Applied to a 25-hectare high school campus containing 1,018 verified trees across 6 allergenic genera, the system produces real-time concentration fields at 5.3~m spatial resolution with sub-second computation time. A fixed annual color scale enables intuitive seasonal comparison, revealing that summer concentrations are approximately 6\% of the spring peak. The system provides actionable path-integrated exposure assessments for allergy-sensitive students.
+We present Campus AeroAllergen Mapping (CAM), a web-based system for modeling hyperlocal pollen dispersion across a school campus at meter-scale resolution. The framework integrates a steady-state Gaussian plume model with Schulman-Scire building downwash corrections to compute pollen concentration at student breathing height ($z = 1.5$~m). Pollen sources are automatically identified from high-resolution satellite imagery using color-based segmentation with watershed splitting, refined through iterative human-in-the-loop calibration. Temporal emission variability is captured by species-specific Gaussian phenological gate functions. Building footprints detected from satellite imagery define indoor exclusion zones where concentration is zeroed. Applied to a 25-hectare high school campus containing 1,018 verified trees across 6 allergenic genera, the system produces real-time concentration fields at 5.3~m spatial resolution with sub-second computation time. A fixed annual color scale enables intuitive seasonal comparison, revealing that summer concentrations are approximately 6\% of the spring peak. The system integrates exposure along student walking paths to report lower-exposure routes; these predictions have not yet been validated against measured pollen counts.
 \end{abstract}
 
 \noindent\textbf{Keywords:} Gaussian plume model, pollen dispersion, aeroallergen mapping, building wake effects, satellite vegetation detection, phenological modeling
@@ -598,17 +598,17 @@ The concentration field exhibits: (i) plume elongation along prevailing wind; (i
 
 The Gaussian plume approach provides a computationally efficient ($<500$~ms per field computation) approximation suitable for real-time interactive applications. Key limitations include the assumption of spatially uniform wind (neglecting building-channeled flows that would require CFD), the RGB-only species classification (improved with hyperspectral data), and absence of ground-truth pollen measurements for quantitative validation.
 
-The human-in-the-loop calibration workflow proved essential: automated detection alone achieved approximately 75\% precision, improved to $>95\%$ after three interactive correction rounds. This suggests that for campus-scale applications, semi-automated approaches combining algorithmic detection with targeted human verification are more practical than fully autonomous methods.
+The human-in-the-loop calibration workflow drove most of the accuracy gain: automated detection alone achieved approximately 75\% precision, improved to $>95\%$ after three interactive correction rounds. For campus-scale applications, then, semi-automated approaches combining algorithmic detection with targeted human verification are more practical than fully autonomous methods.
 
 The fixed annual scale reveals that allergy risk communication should emphasize seasonal context: a June reading of 30~grains/m$^3$ might alarm students if presented without reference to the 500~grains/m$^3$ spring peak that constitutes the actual high-risk period.
 
 \section{Conclusion}
 
-We demonstrated a complete pipeline for hyperlocal pollen dispersion modeling, from satellite-based source identification to physics-based atmospheric transport to actionable exposure assessments. The system resolves concentration gradients at 5-meter scale across a 25-hectare campus with 1,018 individually mapped pollen sources, enabling allergy-sensitive students to make informed daily routing decisions based on current meteorological conditions and seasonal phenology.
+We built a complete pipeline for hyperlocal pollen dispersion modeling, from satellite-based source identification to physics-based atmospheric transport to path-integrated exposure. The system resolves concentration gradients at 5-meter scale across a 25-hectare campus with 1,018 individually mapped pollen sources and recomputes the full field in under 500~ms as wind and season change. Whether the routes it recommends actually reduce measured exposure is the validation step that remains.
 
 \section*{Data Availability}
 
-Source code and campus data are available at the project repository. The tree inventory is derived from the PAUSD 2009 arborist survey supplemented by satellite detection.
+The complete source code and campus data are publicly available at \url{https://github.com/jasminejz2021ai/pollenWebApp}. A live, interactive deployment of the system is accessible at \url{https://pollen-web-app-seven.vercel.app/}. The tree inventory is derived from the PAUSD 2009 arborist survey supplemented by satellite detection.
 
 \section*{Acknowledgments}
 

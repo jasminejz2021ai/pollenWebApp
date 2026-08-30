@@ -27,3 +27,8 @@ docs/*.out
 *.swp
 .idea/
 .vscode/
+
+# ML model weights (large; download separately, not committed)
+backend/models/
+*.pth
+*.pt

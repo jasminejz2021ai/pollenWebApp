@@ -361,13 +361,13 @@ def _stree(x: float, y: float, species_key: str) -> dict:
     return {"x": x, "y": y, "species_key": species_key, "lat": lat, "lng": lng}
 
 
-# Satellite-image bounds for Stanford (about 640m E-W x 560m N-S, matching Gunn's
-# scale so the dispersion grid extent stays valid).
+# Satellite-image bounds for Stanford. Widened ~1.5x from the Main Quad center
+# to show more of central campus (about 960m E-W x 840m N-S).
 STANFORD_BOUNDS = {
-    "north": STANFORD_CENTER_LAT + 0.00252,
-    "south": STANFORD_CENTER_LAT - 0.00252,
-    "east": STANFORD_CENTER_LON + 0.00363,
-    "west": STANFORD_CENTER_LON - 0.00363,
+    "north": STANFORD_CENTER_LAT + 0.00378,
+    "south": STANFORD_CENTER_LAT - 0.00378,
+    "east": STANFORD_CENTER_LON + 0.00545,
+    "west": STANFORD_CENTER_LON - 0.00545,
 }
 
 # Boundary: axis-aligned rectangle around the Main Quad (no rotation).

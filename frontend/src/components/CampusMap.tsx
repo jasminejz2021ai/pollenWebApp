@@ -1,7 +1,7 @@
 import { useEffect, useRef, useMemo, useState, useCallback } from 'react';
 import {
   MapContainer, ImageOverlay, Polygon, Popup,
-  useMap, ZoomControl, Tooltip,
+  useMap, useMapEvents, ZoomControl, Tooltip,
 } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -26,9 +26,23 @@ const SATELLITE_BOUNDS: [[number, number], [number, number]] = [
   [37.4038, -122.1300],
 ];
 
-// Zoom step for the +/- buttons. A full Leaflet zoom level is a 2x scale
-// change, so a 5% size change per click is log2(1.05) ~= 0.0704 levels.
-const ZOOM_STEP_5_PERCENT = Math.log2(1.05);
+const METERS_PER_DEG_LAT = 111320;
+
+// Build a rectangle footprint (list of [lat,lng] corners) for a building from
+// its center lat/lng and its width (E-W) and length (N-S) in meters.
+function buildingCorners(
+  lat: number, lng: number, width_m: number, length_m: number,
+): [number, number][] {
+  const dLat = (length_m / 2) / METERS_PER_DEG_LAT;
+  const dLng = (width_m / 2) / (METERS_PER_DEG_LAT * Math.cos((lat * Math.PI) / 180));
+  return [
+    [lat - dLat, lng - dLng],
+    [lat - dLat, lng + dLng],
+    [lat + dLat, lng + dLng],
+    [lat + dLat, lng - dLng],
+    [lat - dLat, lng - dLng],
+  ];
+}
 
 // Campus boundary - rotated 25° to align with Arastradero Rd
 const CAMPUS_BOUNDARY: [number, number][] = [
@@ -47,6 +61,7 @@ interface DetectedFeature {
   radius_m?: number;
   width_m?: number;
   height_m?: number;
+  length_m?: number;
   species_key?: string;
 }
 
@@ -119,41 +134,69 @@ function FitImageBounds({ bounds }: { bounds: [[number, number], [number, number
 
   useEffect(() => {
     const llBounds = L.latLngBounds(bounds);
-    let initialized = false;
+    let didInitialFit = false;
 
-    const clampMinZoom = () => {
-      // Two reference zooms:
-      //  - fitZoom (inside=false): whole image visible, but leaves margins
-      //    on the sides when the window is wider than the near-square image.
-      //  - fillZoom (inside=true): image covers the whole viewport with no
-      //    margins, but crops the top/bottom edges.
-      // We bias strongly toward fillZoom to minimize the dark margins while
-      // keeping almost the entire image in view.
+    const applyFit = () => {
+      // Container must have its real size before getBoundsZoom is meaningful.
+      map.invalidateSize({ animate: false });
+      // fillZoom (inside=true): image covers the whole viewport with no black
+      // strips. fitZoom (inside=false): whole image visible.
       const fitZoom = map.getBoundsZoom(llBounds, false);
       const fillZoom = map.getBoundsZoom(llBounds, true);
-      const minZoom = Math.max(fitZoom, fillZoom - 0.4);
-      map.setMinZoom(minZoom);
-      if (!initialized) {
-        map.setView(llBounds.getCenter(), minZoom, { animate: false });
-        initialized = true;
-      } else if (map.getZoom() < minZoom) {
-        map.setZoom(minZoom);
+      // Let the user zoom out to see the whole image, but no further.
+      map.setMinZoom(fitZoom);
+      if (!didInitialFit) {
+        // Open covering the full width (no side strips).
+        map.setView(llBounds.getCenter(), fillZoom, { animate: false });
+        didInitialFit = true;
       }
     };
 
-    clampMinZoom();
-    map.on('resize', clampMinZoom);
+    // Run once the map is ready, then again on the next frame in case the
+    // container was still sizing (a common cause of black strips on first load).
+    map.whenReady(() => {
+      applyFit();
+      requestAnimationFrame(applyFit);
+    });
+
+    // On window/container resize, only re-fit to fill; do not fight the user's
+    // current zoom (which would make the +/- buttons feel broken).
+    const onResize = () => {
+      map.invalidateSize({ animate: false });
+      const fitZoom = map.getBoundsZoom(llBounds, false);
+      const fillZoom = map.getBoundsZoom(llBounds, true);
+      map.setMinZoom(fitZoom);
+      if (map.getZoom() < fillZoom) {
+        map.setView(llBounds.getCenter(), fillZoom, { animate: false });
+      }
+    };
+    map.on('resize', onResize);
     return () => {
-      map.off('resize', clampMinZoom);
+      map.off('resize', onResize);
     };
   }, [map, bounds]);
 
   return null;
 }
 
+// In "add building" mode, a map click places a new building centered at the
+// clicked point. Disabled otherwise so normal clicks (popups) still work.
+function AddBuildingHandler({
+  active, onAdd,
+}: { active: boolean; onAdd: (lat: number, lng: number) => void }) {
+  useMapEvents({
+    click(e) {
+      if (active) onAdd(e.latlng.lat, e.latlng.lng);
+    },
+  });
+  return null;
+}
+
 export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSelect }: CampusMapProps) {
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [showDetected, setShowDetected] = useState(true);
+  const [showBuildings, setShowBuildings] = useState(true);
+  const [addingBuilding, setAddingBuilding] = useState(false);
   const [detectedTrees, setDetectedTrees] = useState<DetectedFeature[]>([]);
   const [detectedBuildings, setDetectedBuildings] = useState<DetectedFeature[]>([]);
   const [detecting, setDetecting] = useState(true);
@@ -164,9 +207,12 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
   const bounds: [[number, number], [number, number]] = campus
     ? [[campus.bounds.south, campus.bounds.west], [campus.bounds.north, campus.bounds.east]]
     : SATELLITE_BOUNDS;
-  const center: [number, number] = campus
-    ? [campus.center_lat, campus.center_lon]
-    : [37.4013, -122.1336];
+  // Center the view on the image bounds (NOT the campus center, which can be
+  // offset from the image and would leave a black strip on one side).
+  const center: [number, number] = [
+    (bounds[0][0] + bounds[1][0]) / 2,
+    (bounds[0][1] + bounds[1][1]) / 2,
+  ];
 
   const deleteTree = (index: number) => {
     const updated = detectedTrees.filter((_, i) => i !== index);
@@ -177,6 +223,47 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ trees: updated }),
     }).catch(() => {});
+  };
+
+  const deleteBuilding = (index: number) => {
+    const updated = detectedBuildings.filter((_, i) => i !== index);
+    setDetectedBuildings(updated);
+    // Persist the corrected building set to the cache the server serves.
+    fetch(`/api/detect/update?campus=${campusKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ buildings: updated }),
+    }).catch(() => {});
+  };
+
+  const persistBuildings = (updated: DetectedFeature[]) => {
+    fetch(`/api/detect/update?campus=${campusKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ buildings: updated }),
+    }).catch(() => {});
+  };
+
+  // Add a manually-placed building (default ~24 x 18 m footprint) at a point.
+  const addBuilding = (lat: number, lng: number) => {
+    const width_m = 24;
+    const length_m = 18;
+    const dLat = (length_m / 2) / METERS_PER_DEG_LAT;
+    const dLng = (width_m / 2) / (METERS_PER_DEG_LAT * Math.cos((lat * Math.PI) / 180));
+    const polygon: [number, number][] = [
+      [lat - dLat, lng - dLng],
+      [lat - dLat, lng + dLng],
+      [lat + dLat, lng + dLng],
+      [lat + dLat, lng - dLng],
+      [lat - dLat, lng - dLng],
+    ];
+    const newBuilding: DetectedFeature = {
+      lat, lng, polygon, type: 'building',
+      width_m, length_m,
+    };
+    const updated = [...detectedBuildings, newBuilding];
+    setDetectedBuildings(updated);
+    persistBuildings(updated);
   };
 
   useEffect(() => {
@@ -202,12 +289,15 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
         zoomControl={false}
         scrollWheelZoom={true}
         zoomSnap={0}
-        zoomDelta={ZOOM_STEP_5_PERCENT}
-        wheelPxPerZoomLevel={880}
+        zoomDelta={0.5}
+        wheelPxPerZoomLevel={120}
         crs={L.CRS.EPSG3857}
       >
         {/* Clamp minimum zoom so the satellite image always fills the view */}
         <FitImageBounds bounds={bounds} />
+
+        {/* Click-to-add-building when in add mode */}
+        <AddBuildingHandler active={addingBuilding} onAdd={addBuilding} />
 
         {/* Use downloaded satellite image as background instead of tile API */}
         <ImageOverlay
@@ -219,6 +309,30 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
 
         {/* Heatmap overlay */}
         <HeatmapOverlay heatmap={heatmap} visible={showHeatmap} bounds={bounds} />
+
+        {/* Detected building rooftops (SAM segmentation) */}
+        {showBuildings && detectedBuildings.map((b, i) => (
+          <Polygon
+            key={`bldg-${i}`}
+            positions={b.polygon as [number, number][]}
+            pathOptions={{ color: '#1e3a8a', weight: 1.5, fillColor: '#3b82f6', fillOpacity: 0.35 }}
+          >
+            <Popup>
+              <div className="text-xs min-w-[150px]">
+                <strong className="text-sm">Detected rooftop</strong><br />
+                <div className="mt-1 space-y-0.5">
+                  <div>Footprint: <span className="font-medium">{b.width_m} x {b.length_m ?? b.height_m} m</span></div>
+                </div>
+                <button
+                  onClick={() => deleteBuilding(i)}
+                  className="mt-2 w-full px-2 py-1 bg-red-500 text-white text-xs font-semibold rounded hover:bg-red-600 transition"
+                >
+                  Delete (not a building)
+                </button>
+              </div>
+            </Popup>
+          </Polygon>
+        ))}
 
         {/* Detected trees from satellite image recognition */}
         {showDetected && detectedTrees.map((tree, i) => {
@@ -275,7 +389,30 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
         >
           {showDetected ? 'Hide Detection' : 'Show Detection'}
         </button>
+        <button
+          onClick={() => setShowBuildings(!showBuildings)}
+          className={`px-3 py-2 rounded-lg shadow-lg text-xs font-semibold transition-all ${
+            showBuildings ? 'bg-blue-600 text-white' : 'bg-white text-slate-700 border border-slate-200'
+          }`}
+        >
+          {showBuildings ? 'Hide Buildings' : 'Show Buildings'}
+        </button>
+        <button
+          onClick={() => { setAddingBuilding(!addingBuilding); setShowBuildings(true); }}
+          className={`px-3 py-2 rounded-lg shadow-lg text-xs font-semibold transition-all ${
+            addingBuilding ? 'bg-amber-500 text-white' : 'bg-white text-slate-700 border border-slate-200'
+          }`}
+        >
+          {addingBuilding ? 'Click map to add (done)' : 'Add Building'}
+        </button>
       </div>
+
+      {/* Add-building mode hint */}
+      {addingBuilding && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-amber-500 text-white rounded-lg px-4 py-2 shadow-lg text-xs font-semibold">
+          Click anywhere on the map to add a building. Click "Add Building" again to finish.
+        </div>
+      )}
 
       {/* Status */}
       {detecting && (

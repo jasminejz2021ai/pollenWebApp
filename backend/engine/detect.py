@@ -234,75 +234,100 @@ def detect_trees(img: np.ndarray, min_area: int = 60, bounds: dict = None, use_p
     return trees
 
 
-def detect_buildings(img: np.ndarray, min_area: int = 200) -> List[Dict]:
+def detect_buildings(img: np.ndarray, min_area: int = 400, bounds: dict = None) -> List[Dict]:
     """
-    Detect building rooftops using color segmentation.
-    Buildings appear as gray, white, or tan flat surfaces.
-    """
-    r, g, b = img[:, :, 0].astype(float), img[:, :, 1].astype(float), img[:, :, 2].astype(float)
+    Detect building rooftops using color segmentation with watershed splitting.
 
-    brightness = (r + g + b) / 3
+    Campus rooftops are either gray/white (low saturation, bright) or tan/reddish
+    (Gunn and Stanford tile roofs). We target both while excluding vegetation
+    (green), dark shadows, and very large merged blobs (pavement/fields).
+    bounds: optional {north, south, east, west}; defaults to Gunn globals.
+    """
+    north = bounds["north"] if bounds else NORTH
+    south = bounds["south"] if bounds else SOUTH
+    east = bounds["east"] if bounds else EAST
+    west = bounds["west"] if bounds else WEST
+
+    r = img[:, :, 0].astype(float)
+    g = img[:, :, 1].astype(float)
+    b = img[:, :, 2].astype(float)
+
+    brightness = (r + g + b) / 3.0
     saturation = np.max(img, axis=2).astype(float) - np.min(img, axis=2).astype(float)
+    green_excess = g - (r + b) / 2.0
 
-    # Buildings: low saturation (grayish), medium-to-high brightness
-    is_building = (saturation < 50) & (brightness > 90) & (brightness < 230)
+    # Gray/white roofs: low saturation, bright but not blown out.
+    gray_roof = (saturation < 45) & (brightness > 95) & (brightness < 235)
+    # Tan/reddish tile roofs: warm (red dominant), moderate brightness,
+    # not vegetation. r noticeably greater than b.
+    tan_roof = (r > g) & (g >= b) & ((r - b) > 12) & (brightness > 80) & (brightness < 210)
 
-    # Exclude strongly green areas (vegetation)
-    green_excess = g - (r + b) / 2
-    is_building = is_building & (green_excess < 20)
+    is_building = (gray_roof | tan_roof) & (green_excess < 12)
 
-    from scipy.ndimage import binary_opening, binary_closing
-    mask = binary_opening(is_building, iterations=2)
-    mask = binary_closing(mask, iterations=2)
+    from scipy.ndimage import (binary_opening, binary_closing, binary_erosion,
+                               distance_transform_edt)
+    from skimage.segmentation import watershed
 
-    labeled, num_features = ndimage.label(mask)
+    mask = binary_closing(is_building, iterations=2)
+    mask = binary_opening(mask, iterations=1)
+
+    # Watershed split so adjacent rooftops become separate buildings.
+    eroded = binary_erosion(mask, iterations=4)
+    seeds, _ = ndimage.label(eroded)
+    dist = distance_transform_edt(mask)
+    labeled = watershed(-dist, seeds, mask=mask)
+    num_features = int(labeled.max())
     h, w = img.shape[:2]
+
+    span_lat = north - south
+    span_lng = east - west
+    mplon_scale = abs(span_lng) * 111320.0 * math.cos(math.radians((north + south) / 2))
 
     buildings = []
     for i in range(1, num_features + 1):
         region = (labeled == i)
-        area = np.sum(region)
-        if area < min_area or area > 40000:
+        area = int(np.sum(region))
+        if area < min_area or area > 30000:
             continue
 
         ys, xs = np.where(region)
-        cy, cx = np.mean(ys), np.mean(xs)
-        lat, lng = pixel_to_latlng(cx, cy, w, h)
+        cy, cx = float(np.mean(ys)), float(np.mean(xs))
+        lat, lng = pixel_to_latlng(cx, cy, w, h, bounds)
 
-        min_y, max_y = np.min(ys), np.max(ys)
-        min_x, max_x = np.min(xs), np.max(xs)
+        min_y, max_y = int(np.min(ys)), int(np.max(ys))
+        min_x, max_x = int(np.min(xs)), int(np.max(xs))
 
-        width_m = (max_x - min_x) * abs(EAST - WEST) * 88000 / w
-        height_m = (max_y - min_y) * (NORTH - SOUTH) * 111320 / h
+        width_m = (max_x - min_x) * mplon_scale / w
+        height_m = (max_y - min_y) * span_lat * 111320.0 / h
 
-        # Skip if too large (merged regions)
-        if width_m > 120 or height_m > 120:
+        # Reject overly elongated or overly large regions (paths, pavement).
+        if width_m > 130 or height_m > 130:
+            continue
+        long_side = max(width_m, height_m)
+        short_side = max(min(width_m, height_m), 1.0)
+        if long_side / short_side > 6.0:
+            continue
+        # Reject regions that barely fill their bounding box (not rooftop-like).
+        bbox_area_px = max((max_x - min_x) * (max_y - min_y), 1)
+        if area / bbox_area_px < 0.4:
             continue
 
-        contours = measure.find_contours(region.astype(float), 0.5)
-        if not contours:
-            continue
-
-        # Fit a minimum bounding rectangle instead of using raw contour
-        contour = max(contours, key=len)
-        # Get the 4 corners of a bounding rectangle
-        min_lat, min_lng = pixel_to_latlng(min_x, max_y, w, h)
-        max_lat, max_lng = pixel_to_latlng(max_x, min_y, w, h)
-        
+        min_lat, min_lng = pixel_to_latlng(min_x, max_y, w, h, bounds)
+        max_lat, max_lng = pixel_to_latlng(max_x, min_y, w, h, bounds)
         polygon = [
-            [min_lat, min_lng],
-            [min_lat, max_lng],
-            [max_lat, max_lng],
-            [max_lat, min_lng],
-            [min_lat, min_lng],
+            [round(min_lat, 6), round(min_lng, 6)],
+            [round(min_lat, 6), round(max_lng, 6)],
+            [round(max_lat, 6), round(max_lng, 6)],
+            [round(max_lat, 6), round(min_lng, 6)],
+            [round(min_lat, 6), round(min_lng, 6)],
         ]
 
         buildings.append({
             "lat": round(lat, 6),
             "lng": round(lng, 6),
-            "area_px": int(area),
+            "area_px": area,
             "width_m": round(abs(width_m), 1),
-            "height_m": round(abs(height_m), 1),
+            "length_m": round(abs(height_m), 1),
             "polygon": polygon,
             "type": "building",
         })
@@ -323,10 +348,14 @@ def run_detection(bounds: dict = None, use_position_classifier: bool = True) -> 
     trees = detect_trees(img, bounds=bounds, use_position_classifier=use_position_classifier)
     print(f"Found {len(trees)} tree canopy regions")
 
+    print("Detecting buildings...")
+    buildings = detect_buildings(img, bounds=bounds)
+    print(f"Found {len(buildings)} building regions")
+
     b = bounds or {"north": NORTH, "south": SOUTH, "east": EAST, "west": WEST}
     return {
         "trees": trees,
-        "buildings": [],
+        "buildings": buildings,
         "image_size": list(img.shape[:2]),
         "bounds": {"north": b["north"], "south": b["south"], "east": b["east"], "west": b["west"]},
     }

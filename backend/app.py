@@ -298,29 +298,43 @@ def detect_features():
 
 @app.route("/api/detect/update", methods=["POST"])
 def update_detection():
-    """Update cached detection results. Query param: campus"""
+    """Update cached detection results (trees and/or buildings). Query param: campus.
+
+    Body may include "trees" and/or "buildings" arrays. Whichever is provided is
+    replaced; the other is preserved from the existing cache. This backs the
+    interactive delete/edit workflow so corrections persist in the cache that
+    the deployed server serves (no ML model needed in production).
+    """
     campus = resolve_campus()
     campus_dir = os.path.join(os.path.dirname(__file__), 'static', campus["key"])
     os.makedirs(campus_dir, exist_ok=True)
     cache_path = os.path.join(campus_dir, 'detect_cache.json')
 
     body = request.get_json()
-    if not body or "trees" not in body:
-        return jsonify({"error": "Must include 'trees' array"}), 400
+    if not body or ("trees" not in body and "buildings" not in body):
+        return jsonify({"error": "Must include 'trees' and/or 'buildings' array"}), 400
 
-    data = {"trees": body["trees"], "buildings": [], "image_size": [1398, 1600]}
+    data = {"trees": [], "buildings": [], "image_size": [1398, 1600]}
     if os.path.exists(cache_path):
         with open(cache_path) as f:
             existing = json.load(f)
+            data["trees"] = existing.get("trees", [])
             data["buildings"] = existing.get("buildings", [])
             data["image_size"] = existing.get("image_size", [1398, 1600])
 
-    data["trees"] = body["trees"]
+    if "trees" in body:
+        data["trees"] = body["trees"]
+    if "buildings" in body:
+        data["buildings"] = body["buildings"]
 
     with open(cache_path, 'w') as f:
         json.dump(data, f)
 
-    return jsonify({"status": "ok", "trees_count": len(data["trees"])})
+    return jsonify({
+        "status": "ok",
+        "trees_count": len(data["trees"]),
+        "buildings_count": len(data["buildings"]),
+    })
 
 
 @app.route("/api/weather", methods=["GET"])
