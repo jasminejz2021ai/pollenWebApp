@@ -7,7 +7,8 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import '@geoman-io/leaflet-geoman-free';
 import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
-import type { HeatmapResponse, FloraItem, Building, Campus } from '../utils/api';
+import TestModePanel from './TestModePanel';
+import type { HeatmapResponse, FloraItem, Building, Campus, TestParams } from '../utils/api';
 
 interface CampusMapProps {
   heatmap: HeatmapResponse | null;
@@ -15,6 +16,10 @@ interface CampusMapProps {
   buildings: Building[];
   campus: Campus | null;
   onTreeSelect: (tree: FloraItem) => void;
+  testEnabled: boolean;
+  testParams: TestParams;
+  onTestToggle: (enabled: boolean) => void;
+  onTestChange: (params: TestParams) => void;
 }
 
 const CAMPUS_CENTER: [number, number] = [37.4012, -122.1340];
@@ -442,7 +447,7 @@ function BuildingEditor({
   );
 }
 
-export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSelect }: CampusMapProps) {
+export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSelect, testEnabled, testParams, onTestToggle, onTestChange }: CampusMapProps) {
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [showDetected, setShowDetected] = useState(true);
   const [showBuildings, setShowBuildings] = useState(true);
@@ -584,6 +589,13 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
         >
           {editingShape ? 'Editing shapes (done)' : 'Edit Shape'}
         </button>
+        <div className="w-px h-5 bg-slate-200 mx-1" />
+        <TestModePanel
+          enabled={testEnabled}
+          params={testParams}
+          onToggle={onTestToggle}
+          onChange={onTestChange}
+        />
       </div>
 
       <div className="flex-1 relative">

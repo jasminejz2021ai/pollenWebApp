@@ -5,7 +5,6 @@ import CampusMap from './components/CampusMap';
 import AdvisoryBanner from './components/AdvisoryBanner';
 import SidePanel from './components/SidePanel';
 import TreeInfoCard from './components/TreeInfoCard';
-import TestModePanel from './components/TestModePanel';
 import { fetchCampuses } from './utils/api';
 import type { FloraItem, Campus, TestParams } from './utils/api';
 
@@ -92,6 +91,10 @@ export default function App() {
             buildings={data.buildings}
             campus={activeCampus}
             onTreeSelect={setSelectedTree}
+            testEnabled={testEnabled}
+            testParams={testParams}
+            onTestToggle={setTestEnabled}
+            onTestChange={setTestParams}
           />
 
           {selectedTree && (
@@ -104,13 +107,6 @@ export default function App() {
               />
             </div>
           )}
-
-          <TestModePanel
-            enabled={testEnabled}
-            params={testParams}
-            onToggle={setTestEnabled}
-            onChange={setTestParams}
-          />
         </div>
 
         {showPanel && (

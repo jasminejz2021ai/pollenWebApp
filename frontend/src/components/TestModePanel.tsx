@@ -46,18 +46,18 @@ export default function TestModePanel({ enabled, params, onToggle, onChange }: T
     (best, d, i) => (Math.abs(d - day) < Math.abs(MONTH_DAY[best] - day) ? i : best), 0);
 
   return (
-    <div className="absolute top-4 right-4 z-[1000]">
+    <div className="relative inline-block">
       {!open ? (
         <button
           onClick={() => setOpen(true)}
-          className={`px-3 py-2 rounded-lg shadow-lg text-xs font-semibold transition-all ${
-            enabled ? 'bg-purple-600 text-white' : 'bg-white text-slate-700 border border-slate-200'
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+            enabled ? 'bg-purple-600 text-white' : 'bg-slate-100 text-slate-700 border border-slate-200'
           }`}
         >
-          {enabled ? 'Test Mode: ON (click to open)' : 'Test Mode'}
+          {enabled ? 'Test Mode: ON' : 'Test Mode'}
         </button>
       ) : (
-        <div className="bg-white/97 backdrop-blur-sm rounded-xl p-4 shadow-xl border border-slate-200 w-72 text-xs">
+        <div className="absolute left-0 top-full mt-1 z-[1200] bg-white/97 backdrop-blur-sm rounded-xl p-4 shadow-xl border border-slate-200 w-72 text-xs">
           <div className="flex items-center justify-between mb-2">
             <span className="font-bold text-slate-800 text-sm">Test / Simulation Mode</span>
             <button
