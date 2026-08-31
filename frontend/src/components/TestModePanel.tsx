@@ -46,7 +46,7 @@ export default function TestModePanel({ enabled, params, onToggle, onChange }: T
     (best, d, i) => (Math.abs(d - day) < Math.abs(MONTH_DAY[best] - day) ? i : best), 0);
 
   return (
-    <div className="absolute bottom-4 left-4 z-[1000]">
+    <div className="absolute top-4 right-4 z-[1000]">
       {!open ? (
         <button
           onClick={() => setOpen(true)}
@@ -54,27 +54,35 @@ export default function TestModePanel({ enabled, params, onToggle, onChange }: T
             enabled ? 'bg-purple-600 text-white' : 'bg-white text-slate-700 border border-slate-200'
           }`}
         >
-          {enabled ? 'Test Mode: ON' : 'Test Mode'}
+          {enabled ? 'Test Mode: ON (click to open)' : 'Test Mode'}
         </button>
       ) : (
         <div className="bg-white/97 backdrop-blur-sm rounded-xl p-4 shadow-xl border border-slate-200 w-72 text-xs">
           <div className="flex items-center justify-between mb-2">
             <span className="font-bold text-slate-800 text-sm">Test / Simulation Mode</span>
-            <button onClick={() => setOpen(false)} className="text-slate-400 hover:text-slate-700">x</button>
+            <button
+              onClick={() => setOpen(false)}
+              title="Collapse this panel (does not turn test mode off)"
+              className="text-slate-400 hover:text-slate-700 text-base leading-none"
+            >×</button>
           </div>
 
-          <div className="flex items-center justify-between mb-3">
-            <span className={`font-semibold ${enabled ? 'text-purple-700' : 'text-slate-800'}`}>
-              {enabled ? 'Simulating custom conditions' : 'Using live weather'}
-            </span>
-            <button
-              onClick={() => onToggle(!enabled)}
-              className={`px-2 py-1 rounded-md font-semibold transition-all ${
-                enabled ? 'bg-slate-200 text-slate-700' : 'bg-purple-600 text-white'
-              }`}
-            >
-              {enabled ? 'Use live weather' : 'Turn on'}
-            </button>
+          {/* Prominent on/off control */}
+          <button
+            onClick={() => onToggle(!enabled)}
+            className={`w-full mb-3 px-3 py-2 rounded-lg font-semibold transition-all ${
+              enabled
+                ? 'bg-red-500 text-white hover:bg-red-600'
+                : 'bg-purple-600 text-white hover:bg-purple-700'
+            }`}
+          >
+            {enabled ? 'Turn OFF Test Mode (use live weather)' : 'Turn ON Test Mode'}
+          </button>
+
+          <div className="mb-3 text-slate-600">
+            {enabled
+              ? 'Simulating custom conditions below.'
+              : 'Using live weather. Adjust a value below to start simulating.'}
           </div>
 
           <div>
