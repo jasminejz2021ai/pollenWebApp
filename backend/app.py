@@ -601,6 +601,10 @@ def get_advisory():
 
     high_risk_paths = [p for p in path_advisories if p["risk_level"] in ("high", "very_high")]
 
+    # Find named detected buildings sitting in the highest-concentration areas,
+    # so the advisory can refer to them by name (e.g. "near Bow Gym").
+    hotspot_buildings = _named_building_hotspots(campus, concentration)
+
     advisory_message = ""
     if high_risk_paths:
         worst = max(high_risk_paths, key=lambda p: p["total_dose"])
@@ -610,6 +614,19 @@ def get_advisory():
             f"The route '{worst['path_name']}' currently has high pollen concentration "
             f"due to {wind_dir_text} winds during peak {active_names} season. "
             f"Consider an alternate route to reduce exposure."
+        )
+        if hotspot_buildings:
+            names = ", ".join(hotspot_buildings)
+            advisory_message += (
+                f" Elevated pollen was detected near {names}; sensitive students "
+                f"should minimize time in these areas."
+            )
+    elif hotspot_buildings:
+        # Even without a high-risk standard path, flag named building hotspots.
+        names = ", ".join(hotspot_buildings)
+        advisory_message = (
+            f"Pollen is currently elevated near {names}. Sensitive students may "
+            f"wish to limit time in these areas."
         )
 
     return jsonify({
@@ -628,6 +645,56 @@ def _wind_direction_text(deg: float) -> str:
     directions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
     idx = int((deg + 22.5) / 45.0) % 8
     return directions[idx]
+
+
+def _named_building_hotspots(campus, concentration, max_names=3, threshold=50.0):
+    """Return up to max_names named detected buildings that sit in the highest
+    pollen-concentration areas, so advisories can reference them by name.
+
+    Samples the concentration grid at each named building's location and keeps
+    those above `threshold` (grains/m^3), sorted by concentration descending.
+    """
+    cache_path = campus_static_path(campus["key"], 'detect_cache.json')
+    if not os.path.exists(cache_path):
+        return []
+    with open(cache_path) as f:
+        buildings = json.load(f).get("buildings", [])
+
+    center_lat = campus["center_lat"]
+    center_lon = campus["center_lon"]
+    mplat = METERS_PER_DEG_LAT
+    mplon = 111320.0 * np.cos(np.radians(center_lat))
+    ny, nx = concentration.shape
+
+    scored = []
+    for b in buildings:
+        name = (b.get("name") or "").strip()
+        # Skip unnamed and default placeholder names.
+        if not name or name.lower() == "new building":
+            continue
+        bx = (b["lng"] - center_lon) * mplon
+        by = (b["lat"] - center_lat) * mplat
+        gx = int(round((bx + GRID_EXTENT_X) / (2 * GRID_EXTENT_X) * (nx - 1)))
+        gy = int(round((by + GRID_EXTENT_Y) / (2 * GRID_EXTENT_Y) * (ny - 1)))
+        if not (0 <= gx < nx and 0 <= gy < ny):
+            continue
+        # Sample the max concentration in a small neighborhood around the building.
+        y0, y1 = max(0, gy - 2), min(ny, gy + 3)
+        x0, x1 = max(0, gx - 2), min(nx, gx + 3)
+        c = float(np.max(concentration[y0:y1, x0:x1]))
+        if c >= threshold:
+            scored.append((c, name))
+
+    scored.sort(reverse=True)
+    # De-duplicate names while preserving order.
+    seen, out = set(), []
+    for _, name in scored:
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+        if len(out) >= max_names:
+            break
+    return out
 
 
 if __name__ == "__main__":
