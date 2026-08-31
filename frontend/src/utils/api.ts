@@ -1,4 +1,4 @@
-const API_BASE = (import.meta as any).env?.VITE_API_URL || '/api';
+export const API_BASE = (import.meta as any).env?.VITE_API_URL || '/api';
 
 export interface Campus {
   key: string;

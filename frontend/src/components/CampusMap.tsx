@@ -9,6 +9,7 @@ import '@geoman-io/leaflet-geoman-free';
 import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
 import TestModePanel from './TestModePanel';
 import type { HeatmapResponse, FloraItem, Building, Campus, TestParams } from '../utils/api';
+import { API_BASE } from '../utils/api';
 
 interface CampusMapProps {
   heatmap: HeatmapResponse | null;
@@ -59,7 +60,22 @@ function rotatedRect(
   return ring;
 }
 
-// Campus boundary - rotated 25° to align with Arastradero Rd
+// Approximate a tree canopy as a regular polygon (circle) of a given radius.
+function circlePolygon(
+  lat: number, lng: number, radius_m: number, segments = 16,
+): [number, number][] {
+  const mLat = METERS_PER_DEG_LAT;
+  const mLng = METERS_PER_DEG_LAT * Math.cos((lat * Math.PI) / 180);
+  const ring: [number, number][] = [];
+  for (let k = 0; k < segments; k++) {
+    const t = (k / segments) * 2 * Math.PI;
+    const rx = radius_m * Math.cos(t);
+    const ry = radius_m * Math.sin(t);
+    ring.push([lat + ry / mLat, lng + rx / mLng]);
+  }
+  ring.push(ring[0]);
+  return ring;
+}
 const CAMPUS_BOUNDARY: [number, number][] = [
   [37.398454, -122.135770],
   [37.401159, -122.129970],
@@ -369,6 +385,60 @@ function BuildingEditLayer({
 // Editable form shown in a building's popup: name, floors (=> height), width,
 // length, and rotation. Commits changes to the parent, which recomputes the
 // footprint polygon and persists.
+function TreeEditor({
+  tree, index, species, onApply, onDelete,
+}: {
+  tree: DetectedFeature;
+  index: number;
+  species?: { name: string; scientific: string; family: string; potency: number };
+  onApply: (index: number, radius_m: number) => void;
+  onDelete: (index: number) => void;
+}) {
+  const [radius, setRadius] = useState(Math.round((tree.radius_m ?? 4) * 10) / 10);
+  const apply = (r: number) => onApply(index, r);
+
+  return (
+    <div className="text-xs min-w-[180px] text-slate-900">
+      <strong className="text-sm">{species?.name || 'Tree'}</strong><br />
+      <em className="text-slate-500">{species?.scientific}</em>
+      <div className="mt-1 space-y-0.5">
+        <div>Family: <span className="font-medium">{species?.family}</span></div>
+        <div>Allergen potency: <span className="font-medium">{species?.potency}/5</span></div>
+      </div>
+      <div className="mt-2">
+        <div className="flex items-center justify-between mb-0.5">
+          <label className="text-slate-700">Canopy radius</label>
+          <div className="flex items-center gap-1">
+            <input
+              type="number" min={0.5} max={30} step={0.5} value={radius}
+              onChange={(e) => {
+                const r = parseFloat(e.target.value);
+                if (!Number.isNaN(r)) setRadius(r);
+              }}
+              onBlur={() => apply(Math.min(30, Math.max(0.5, radius)))}
+              className="w-14 border border-slate-300 rounded px-1 py-0.5 text-right"
+            />
+            <span className="text-slate-500">m</span>
+          </div>
+        </div>
+        <input
+          type="range" min={0.5} max={30} step={0.5} value={radius}
+          onChange={(e) => setRadius(parseFloat(e.target.value))}
+          onMouseUp={() => apply(radius)}
+          onTouchEnd={() => apply(radius)}
+          className="w-full accent-emerald-600"
+        />
+      </div>
+      <button
+        onClick={() => onDelete(index)}
+        className="mt-2 w-full px-2 py-1 bg-red-500 text-white font-semibold rounded hover:bg-red-600 transition"
+      >
+        Delete (not a tree)
+      </button>
+    </div>
+  );
+}
+
 function BuildingEditor({
   building, index, onApply, onDelete,
 }: {
@@ -386,7 +456,7 @@ function BuildingEditor({
   const apply = (patch: Partial<DetectedFeature>) => onApply(index, patch);
 
   return (
-    <div className="text-xs min-w-[200px] text-slate-900">
+    <div className="text-xs min-w-[200px] max-h-[45vh] overflow-y-auto pr-1 text-slate-900">
       <strong className="text-sm">Building</strong>
       <div className="mt-2 space-y-2">
         <div>
@@ -454,28 +524,56 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
   const [addingBuilding, setAddingBuilding] = useState(false);
   const [editingShape, setEditingShape] = useState(false);
   const [selectedBuildingIndex, setSelectedBuildingIndex] = useState<number | null>(null);
+  const [showEditHint, setShowEditHint] = useState(false);
   const [detectedTrees, setDetectedTrees] = useState<DetectedFeature[]>([]);
   const [detectedBuildings, setDetectedBuildings] = useState<DetectedFeature[]>([]);
   const [detecting, setDetecting] = useState(true);
 
   const campusKey = campus?.key || 'gunn';
 
-  // Map bounds from the selected campus (fall back to Gunn's bounds).
-  const bounds: [[number, number], [number, number]] = campus
-    ? [[campus.bounds.south, campus.bounds.west], [campus.bounds.north, campus.bounds.east]]
-    : SATELLITE_BOUNDS;
-  // Center the view on the image bounds (NOT the campus center, which can be
-  // offset from the image and would leave a black strip on one side).
-  const center: [number, number] = [
-    (bounds[0][0] + bounds[1][0]) / 2,
-    (bounds[0][1] + bounds[1][1]) / 2,
-  ];
+  // Map bounds from the selected campus (fall back to Gunn's bounds). Memoized
+  // so the reference stays stable across re-renders; otherwise a new array each
+  // render would re-trigger the fit-to-bounds effect and snap the map view
+  // (e.g. mid drag-edit), hiding the shape being edited.
+  const bounds = useMemo<[[number, number], [number, number]]>(
+    () => campus
+      ? [[campus.bounds.south, campus.bounds.west], [campus.bounds.north, campus.bounds.east]]
+      : SATELLITE_BOUNDS,
+    [campus],
+  );
+  // Center on the image bounds (NOT the campus center, which can be offset and
+  // would leave a black strip on one side).
+  const center = useMemo<[number, number]>(
+    () => [
+      (bounds[0][0] + bounds[1][0]) / 2,
+      (bounds[0][1] + bounds[1][1]) / 2,
+    ],
+    [bounds],
+  );
 
   const deleteTree = (index: number) => {
     const updated = detectedTrees.filter((_, i) => i !== index);
     setDetectedTrees(updated);
     // Save to backend
-    fetch(`/api/detect/update?campus=${campusKey}`, {
+    fetch(`${API_BASE}/detect/update?campus=${campusKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trees: updated }),
+    }).catch(() => {});
+  };
+
+  // Edit a tree's canopy radius; regenerate its circular footprint and persist.
+  const updateTree = (index: number, radius_m: number) => {
+    const updated = detectedTrees.map((t, i) => {
+      if (i !== index) return t;
+      return {
+        ...t,
+        radius_m,
+        polygon: circlePolygon(t.lat, t.lng, radius_m),
+      };
+    });
+    setDetectedTrees(updated);
+    fetch(`${API_BASE}/detect/update?campus=${campusKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ trees: updated }),
@@ -486,7 +584,7 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
     const updated = detectedBuildings.filter((_, i) => i !== index);
     setDetectedBuildings(updated);
     // Persist the corrected building set to the cache the server serves.
-    fetch(`/api/detect/update?campus=${campusKey}`, {
+    fetch(`${API_BASE}/detect/update?campus=${campusKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ buildings: updated }),
@@ -494,7 +592,7 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
   };
 
   const persistBuildings = (updated: DetectedFeature[]) => {
-    fetch(`/api/detect/update?campus=${campusKey}`, {
+    fetch(`${API_BASE}/detect/update?campus=${campusKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ buildings: updated }),
@@ -532,9 +630,18 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
     persistBuildings(updated);
   };
 
+  // Show the edit-shape hint briefly (then hide) when entering edit mode or
+  // changing the selected building, so it does not permanently block the map.
+  useEffect(() => {
+    if (!editingShape) { setShowEditHint(false); return; }
+    setShowEditHint(true);
+    const t = setTimeout(() => setShowEditHint(false), 4000);
+    return () => clearTimeout(t);
+  }, [editingShape, selectedBuildingIndex]);
+
   useEffect(() => {
     setDetecting(true);
-    fetch(`/api/detect?campus=${campusKey}`)
+    fetch(`${API_BASE}/detect?campus=${campusKey}`)
       .then((r) => r.json())
       .then((data) => {
         setDetectedTrees(data.trees || []);
@@ -620,7 +727,7 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
 
         {/* Use downloaded satellite image as background instead of tile API */}
         <ImageOverlay
-          url={`/api/static/satellite.png?campus=${campusKey}`}
+          url={`${API_BASE}/static/satellite.png?campus=${campusKey}`}
           bounds={bounds}
         />
 
@@ -641,7 +748,7 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
             }}
           >
             {!editingShape && (
-            <Popup minWidth={220} maxWidth={260}>
+            <Popup minWidth={220} maxWidth={260} autoPan={true} keepInView={true} autoPanPadding={[20, 20]}>
               <BuildingEditor
                 building={b}
                 index={i}
@@ -678,22 +785,14 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
               positions={tree.polygon as [number, number][]}
               pathOptions={{ color, weight: 2, fillColor: color, fillOpacity: 0.3 }}
             >
-              <Popup>
-                <div className="text-xs min-w-[160px]">
-                  <strong className="text-sm">{species?.name || 'Tree'}</strong><br />
-                  <em className="text-slate-500">{species?.scientific}</em><br />
-                  <div className="mt-1 space-y-0.5">
-                    <div>Family: <span className="font-medium">{species?.family}</span></div>
-                    <div>Canopy radius: <span className="font-medium">{tree.radius_m}m</span></div>
-                    <div>Allergen potency: <span className="font-medium">{species?.potency}/5</span></div>
-                  </div>
-                  <button
-                    onClick={() => deleteTree(i)}
-                    className="mt-2 w-full px-2 py-1 bg-red-500 text-white text-xs font-semibold rounded hover:bg-red-600 transition"
-                  >
-                    Delete (not a tree)
-                  </button>
-                </div>
+              <Popup minWidth={200} maxWidth={240} autoPan={true} keepInView={true} autoPanPadding={[20, 20]}>
+                <TreeEditor
+                  tree={tree}
+                  index={i}
+                  species={species}
+                  onApply={updateTree}
+                  onDelete={deleteTree}
+                />
               </Popup>
             </Polygon>
           );
@@ -707,8 +806,8 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
         </div>
       )}
 
-      {/* Edit-shape mode hint */}
-      {editingShape && (
+      {/* Edit-shape mode hint (auto-hides after a few seconds) */}
+      {editingShape && showEditHint && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-purple-600 text-white rounded-lg px-4 py-2 shadow-lg text-xs font-semibold">
           {selectedBuildingIndex === null
             ? 'Click a building to select it, then drag its corners to resize or the purple dot to rotate.'

@@ -248,6 +248,9 @@ def build_flora_matrix(
 
     tree_locations: list of dicts with keys:
         x, y, species_key
+        (optional) radius_m: canopy radius in meters. When present, emission is
+        scaled by canopy area relative to a nominal 4 m radius, so a larger
+        canopy releases proportionally more pollen.
 
     Returns ndarray with columns:
         [x, y, Q_base, potency_weight, start_day, end_day, peak_day, sigma_t]
@@ -255,16 +258,25 @@ def build_flora_matrix(
     if current_day is None:
         current_day = day_of_year()
 
+    NOMINAL_RADIUS_M = 4.0
     rows = []
     for tree in tree_locations:
         species_key = tree["species_key"]
         if species_key not in BOTANICAL_CATALOG:
             continue
         profile = BOTANICAL_CATALOG[species_key]
+        # Scale emission by canopy area (~radius^2) relative to a nominal tree;
+        # clamped so a hand-edited radius cannot produce absurd emission.
+        radius_m = tree.get("radius_m")
+        if radius_m and radius_m > 0:
+            area_factor = (radius_m / NOMINAL_RADIUS_M) ** 2
+            area_factor = min(max(area_factor, 0.1), 10.0)
+        else:
+            area_factor = 1.0
         rows.append([
             tree["x"],
             tree["y"],
-            profile["base_emission"],
+            profile["base_emission"] * area_factor,
             profile["potency_weight"],
             profile["start_day"],
             profile["end_day"],

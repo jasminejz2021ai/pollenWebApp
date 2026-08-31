@@ -145,7 +145,10 @@ def compute_concentration_field(campus: dict, wind_data: dict, current_day: int,
             species_key = dt.get("species_key", "coast_live_oak")
             x = (dt["lng"] - center_lon) * mplon
             y = (dt["lat"] - center_lat) * mplat
-            tree_locations.append({"x": x, "y": y, "species_key": species_key})
+            tree_locations.append({
+                "x": x, "y": y, "species_key": species_key,
+                "radius_m": dt.get("radius_m"),
+            })
         flora_matrix = build_flora_matrix(tree_locations, current_day)
     else:
         flora_matrix = build_flora_matrix(campus["trees"], current_day)
@@ -196,6 +199,7 @@ def compute_concentration_field(campus: dict, wind_data: dict, current_day: int,
             wind_data.get("stability_class", "D"), receptor_height,
         )
     else:
+        building_mask = None
         concentration = superpose_sources(
             GRID_X, GRID_Y,
             flora_matrix,
@@ -208,16 +212,17 @@ def compute_concentration_field(campus: dict, wind_data: dict, current_day: int,
         )
 
     # Zero out concentration over building footprints: at breathing height
-    # inside a building there is no outdoor pollen exposure. Build the mask
-    # directly from the detected building polygons so it always matches the
-    # buildings shown on the map (works for every campus, no stale .npy needed).
-    if detected_buildings:
+    # inside a building there is no outdoor pollen exposure. Reuse the mask from
+    # the potential-flow step when available, else build it from the detected
+    # polygons (or fall back to a legacy .npy mask).
+    if building_mask is None and detected_buildings:
         building_mask = _rasterize_buildings(detected_buildings, center_lat, center_lon, mplat, mplon)
+    if building_mask is not None:
         concentration[building_mask] = 0.0
     elif os.path.exists(mask_path):
-        building_mask = np.load(mask_path)
-        if building_mask.shape == concentration.shape:
-            concentration[building_mask] = 0.0
+        legacy_mask = np.load(mask_path)
+        if legacy_mask.shape == concentration.shape:
+            concentration[legacy_mask] = 0.0
 
     return concentration
 
