@@ -172,6 +172,83 @@ BOTANICAL_CATALOG = {
 }
 
 
+# ---------------------------------------------------------------------------
+# "Other" class as a prevalence-weighted mixture of unmodeled genera.
+#
+# Trees not confidently classified into a named genus are labeled "other". Such
+# a tree is modeled not as one generic profile but as a weighted blend of the
+# genera that make up the *unmodeled long tail* of each campus's real tree
+# inventory. This gives "Other" a realistic, possibly multi-modal seasonal
+# emission (e.g. a little spring, a little fall) grounded in what actually grows
+# on campus, rather than a single hand-picked spring bump.
+#
+# TAIL_PROFILES holds phenology/emission for tail genera not already in
+# BOTANICAL_CATALOG. Entries already in BOTANICAL_CATALOG (e.g. eucalyptus,
+# olive, ginkgo, walnut, pine) are referenced by key in the weight tables.
+# ---------------------------------------------------------------------------
+TAIL_PROFILES = {
+    # Low/moderate-allergen ornamentals and non-natives common on Bay Area
+    # campuses. Values are representative aerobiological estimates.
+    "hawthorn":    {"base_emission": 180.0, "potency_weight": 2.0, "start_day": 105, "end_day": 152, "peak_day": 128, "sigma_t": 15.0},
+    "privet":      {"base_emission": 300.0, "potency_weight": 3.5, "start_day": 152, "end_day": 213, "peak_day": 182, "sigma_t": 18.0},
+    "sweetgum":    {"base_emission": 200.0, "potency_weight": 2.0, "start_day": 74,  "end_day": 121, "peak_day": 98,  "sigma_t": 15.0},
+    "pepper_tree": {"base_emission": 220.0, "potency_weight": 2.5, "start_day": 152, "end_day": 273, "peak_day": 213, "sigma_t": 30.0},
+    "crape_myrtle":{"base_emission": 120.0, "potency_weight": 1.5, "start_day": 182, "end_day": 258, "peak_day": 213, "sigma_t": 20.0},
+    "ornamental_pear": {"base_emission": 150.0, "potency_weight": 2.0, "start_day": 60, "end_day": 105, "peak_day": 82, "sigma_t": 12.0},
+    "spruce":      {"base_emission": 250.0, "potency_weight": 2.0, "start_day": 105, "end_day": 152, "peak_day": 128, "sigma_t": 15.0},
+    "plum":        {"base_emission": 130.0, "potency_weight": 2.0, "start_day": 46,  "end_day": 91,  "peak_day": 68,  "sigma_t": 12.0},
+    "pistache":    {"base_emission": 260.0, "potency_weight": 3.0, "start_day": 91,  "end_day": 121, "peak_day": 105, "sigma_t": 12.0},
+    "generic_broadleaf": {"base_emission": 250.0, "potency_weight": 3.0, "start_day": 60, "end_day": 151, "peak_day": 105, "sigma_t": 25.0},
+}
+
+
+def _tail_profile(key):
+    """Look up a tail genus profile from BOTANICAL_CATALOG first, then TAIL_PROFILES."""
+    if key in BOTANICAL_CATALOG:
+        p = BOTANICAL_CATALOG[key]
+        return {k: p[k] for k in ("base_emission", "potency_weight", "start_day", "end_day", "peak_day", "sigma_t")}
+    return TAIL_PROFILES[key]
+
+
+# Per-campus mixture weights for the "Other" class, taken from the unmodeled
+# long tail of each campus's tree inventory (normalized internally). Gunn is
+# from the 2009 PAUSD arborist survey; Stanford from its campus tree inventory.
+OTHER_MIX_WEIGHTS = {
+    "gunn": {
+        # Gunn modeled genera are oak/redwood/cedar/sycamore/elm/pine; the tail
+        # below is the remainder of the 2009 survey (approx. counts as weights).
+        "cedar": 27, "hawthorn": 14, "privet": 11, "sweetgum": 9, "pepper_tree": 8,
+        "eucalyptus": 6, "crape_myrtle": 5, "ornamental_pear": 5, "spruce": 4,
+        "plum": 4, "olive": 3, "ginkgo": 1, "california_black_walnut": 2,
+        "pistache": 2, "generic_broadleaf": 6,
+    },
+    "stanford": {
+        # Stanford modeled genera are coast live oak/palm/eucalyptus/redwood/
+        # valley oak/olive; the tail is the broad remainder of the inventory.
+        "pistache": 8, "pine": 8, "sweetgum": 4, "privet": 4, "crape_myrtle": 3,
+        "plum": 3, "ginkgo": 2, "california_black_walnut": 2, "cedar": 3,
+        "generic_broadleaf": 20,
+    },
+}
+
+
+def _other_effective_emission(campus_key, current_day):
+    """Weighted-sum effective emission (grains/s, potency-weighted) at
+    current_day for the 'Other' class of a campus. Returns Q*W*Gamma summed
+    over the campus's unmodeled tail genera with inventory-derived weights."""
+    weights = OTHER_MIX_WEIGHTS.get(campus_key) or OTHER_MIX_WEIGHTS["gunn"]
+    total_w = float(sum(weights.values())) or 1.0
+    e = 0.0
+    for key, w in weights.items():
+        p = _tail_profile(key)
+        if current_day < p["start_day"] or current_day > p["end_day"]:
+            gamma = 0.0
+        else:
+            gamma = np.exp(-((current_day - p["peak_day"]) ** 2) / (2.0 * p["sigma_t"] ** 2))
+        e += (w / total_w) * p["base_emission"] * p["potency_weight"] * gamma
+    return float(e)
+
+
 def day_of_year(d: Optional[date] = None) -> int:
     """Get Julian day number (1-365/366) for a given date or today."""
     if d is None:
@@ -241,7 +318,8 @@ def get_active_species(current_day: Optional[int] = None) -> List[Dict]:
 
 
 def build_flora_matrix(
-    tree_locations: List[Dict], current_day: Optional[int] = None
+    tree_locations: List[Dict], current_day: Optional[int] = None,
+    campus_key: Optional[str] = None,
 ) -> np.ndarray:
     """
     Build the N×8 Flora Characteristic Matrix P for the dispersion engine.
@@ -251,37 +329,56 @@ def build_flora_matrix(
         (optional) radius_m: canopy radius in meters. When present, emission is
         scaled by canopy area relative to a nominal 4 m radius, so a larger
         canopy releases proportionally more pollen.
+    campus_key: which campus (selects the "Other" mixture weights). The "Other"
+        class is modeled as a prevalence-weighted blend of the campus's unmodeled
+        tail genera rather than a single generic profile.
 
     Returns ndarray with columns:
         [x, y, Q_base, potency_weight, start_day, end_day, peak_day, sigma_t]
+
+    The dispersion engine evaluates each row as
+        effective = Q_base * potency_weight * Gamma(current_day; peak_day, sigma_t)
+    gated by [start_day, end_day]. For "Other" rows we precompute the weighted
+    mixture emission at current_day and encode it as a degenerate always-on gate
+    (peak_day = current_day, wide sigma, full-year window) so the engine
+    reproduces exactly that value.
     """
     if current_day is None:
         current_day = day_of_year()
 
     NOMINAL_RADIUS_M = 4.0
-    # Generic profile for user-reclassified "Other"/unknown trees: a moderate
-    # emitter with a broad spring window so the tree still contributes to
-    # dispersion instead of being silently dropped.
-    GENERIC_PROFILE = {
-        "base_emission": 300.0,
-        "potency_weight": 3.0,
-        "start_day": 60,
-        "end_day": 151,
-        "peak_day": 105,
-        "sigma_t": 25.0,
-    }
+
+    # Precompute the "Other" mixture emission for this campus and day once.
+    other_emission = _other_effective_emission(campus_key or "gunn", current_day)
+
     rows = []
     for tree in tree_locations:
         species_key = tree["species_key"]
-        profile = BOTANICAL_CATALOG.get(species_key, GENERIC_PROFILE)
-        # Scale emission by canopy area (~radius^2) relative to a nominal tree;
-        # clamped so a hand-edited radius cannot produce absurd emission.
+
+        # Canopy-area scaling (shared by all species): larger canopy emits more.
         radius_m = tree.get("radius_m")
         if radius_m and radius_m > 0:
             area_factor = (radius_m / NOMINAL_RADIUS_M) ** 2
             area_factor = min(max(area_factor, 0.1), 10.0)
         else:
             area_factor = 1.0
+
+        if species_key == "other" or species_key not in BOTANICAL_CATALOG:
+            # Weighted-mixture "Other": emit the precomputed day value directly,
+            # using a degenerate always-on gate so the engine returns it as-is.
+            rows.append([
+                tree["x"],
+                tree["y"],
+                other_emission * area_factor,  # Q_base already = sum(w*Q*W*Gamma)
+                1.0,                            # potency folded into the mixture
+                1,                              # start_day (full year)
+                366,                            # end_day
+                float(current_day),             # peak_day == today -> Gamma = 1
+                1e6,                            # huge sigma -> Gamma ~ 1
+            ])
+            continue
+
+        profile = BOTANICAL_CATALOG[species_key]
         rows.append([
             tree["x"],
             tree["y"],

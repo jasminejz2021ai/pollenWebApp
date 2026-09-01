@@ -149,9 +149,9 @@ def compute_concentration_field(campus: dict, wind_data: dict, current_day: int,
                 "x": x, "y": y, "species_key": species_key,
                 "radius_m": dt.get("radius_m"),
             })
-        flora_matrix = build_flora_matrix(tree_locations, current_day)
+        flora_matrix = build_flora_matrix(tree_locations, current_day, campus_key=campus["key"])
     else:
-        flora_matrix = build_flora_matrix(campus["trees"], current_day)
+        flora_matrix = build_flora_matrix(campus["trees"], current_day, campus_key=campus["key"])
 
     if flora_matrix.shape[0] == 0:
         return np.zeros_like(GRID_X)
