@@ -482,13 +482,16 @@ Cedar & 400 & 3.0 \\
 Pine & 400 & 2.0 \\
 Chinese Elm & 350 & 3.0 \\
 Western Sycamore & 400 & 3.5 \\
+Canary Island Palm & 350 & 3.0 \\
+Olive & 600 & 5.0 \\
+Eucalyptus & 250 & 2.0 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \subsection{Species Phenological Parameters}
 
-Table~\ref{tab:species} lists the temporal parameters for the seven genera modeled on campus, derived from Bay Area regional data \citep{bastl2016}. Most bloom in late winter through spring; Cedar (\emph{Cedrus}) is the notable exception, pollinating in the fall (October--December), so it produces a secondary autumn peak that the other genera do not.
+Table~\ref{tab:species} lists the temporal parameters for the modeled genera, derived from Bay Area regional data \citep{bastl2016}. Most bloom in late winter through spring; Cedar (\emph{Cedrus}) is a notable exception, pollinating in the fall (October--December) and producing a secondary autumn peak, while the campus-specific sets differ (e.g.\ Stanford adds Canary Island Palm, Olive, and Eucalyptus).
 
 \begin{table}[h]
 \centering
@@ -505,6 +508,9 @@ Cedar & 274 & 335 & 305 & 21 & 3.0 \\
 Pine & 91 & 181 & 135 & 30 & 2.0 \\
 Chinese Elm & 244 & 305 & 274 & 21 & 3.0 \\
 Sycamore & 74 & 121 & 100 & 18 & 3.5 \\
+Canary Island Palm & 74 & 135 & 105 & 20 & 3.0 \\
+Olive & 105 & 150 & 128 & 18 & 5.0 \\
+Eucalyptus & 1 & 120 & 60 & 30 & 2.0 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -568,6 +574,11 @@ Both tree and building detections undergo iterative refinement through an intera
 
 The pipeline is campus-agnostic: a campus is defined by its geographic bounds, from which the satellite image and detections are generated. Gunn High School uses Esri World Imagery; the Stanford core uses USGS NAIP imagery (whose true-color rendering shows the characteristic red-tile roofs), fetched seam-free by stitching Web-Mercator tiles.
 
+\subsection{Rooftop-Overlap Filtering}
+\label{sec:overlapfilter}
+
+Color-based canopy detection occasionally fires on rooftops---warm or textured roof pixels can resemble vegetation---especially on dense urban campuses. After buildings are detected, we therefore prune tree candidates geometrically: a canopy is discarded if more than 50\% of its disk area (estimated by area-weighted sampling of the disk against the building polygons) lies inside any detected footprint. This is applied only where needed; on the densely built Stanford core it removed a substantial share of the raw canopies (Section~\ref{sec:results}), leaving trees in courtyards, along streets, and on open ground while eliminating rooftop false positives.
+
 \section{Exposure Assessment}
 
 \subsection{Path-Integrated Dose}
@@ -586,7 +597,7 @@ Dose is mapped to actionable risk levels: Low ($D < 50$), Moderate ($50$--$200$)
 
 \subsection{Detection Performance}
 
-On the Gunn campus the detection pipeline maps roughly 900 trees, which we label against the seven allergenic genera modeled here (Valley Oak, Coast Live Oak, Coast Redwood, Cedar, Western Sycamore, Pine, and Chinese Elm) plus a generic \emph{Other} class (Section~\ref{sec:other}); the exact counts evolve as the set is refined through the interactive editor. The species proportions are anchored to the 2009 PAUSD arborist inventory of the campus \citep{pausd2009}, which surveyed 455 numbered trees. In that inventory the dominant genera are Valley Oak (116 trees, 25.5\%), Coast Redwood (92, 20.2\%), Coast Live Oak (70, 15.4\%), Cedar (27, 5.9\%), Western Sycamore (21, 4.6\%), and Chinese Elm (20, 4.4\%); all oaks together account for 192 trees (42.2\%). The remaining $\sim$17\% comprises a long tail of ornamental and non-native genera (e.g.\ hawthorn, privet, sweetgum, pepper) that are not individually modeled and are assigned to the \emph{Other} class. On the larger Stanford core, tiled SAM detection identifies on the order of $10^3$ building rooftops and $\sim$$10^4$ tree canopies, giving comprehensive coverage of the full campus. Detection and imagery are cached per campus, so no machine-learning model runs on the live server.
+On the Gunn campus the detection pipeline maps roughly 900 trees, which we label against the seven allergenic genera modeled here (Valley Oak, Coast Live Oak, Coast Redwood, Cedar, Western Sycamore, Pine, and Chinese Elm) plus a generic \emph{Other} class (Section~\ref{sec:other}); the exact counts evolve as the set is refined through the interactive editor. The species proportions are anchored to the 2009 PAUSD arborist inventory of the campus \citep{pausd2009}, which surveyed 455 numbered trees. In that inventory the dominant genera are Valley Oak (116 trees, 25.5\%), Coast Redwood (92, 20.2\%), Coast Live Oak (70, 15.4\%), Cedar (27, 5.9\%), Western Sycamore (21, 4.6\%), and Chinese Elm (20, 4.4\%); all oaks together account for 192 trees (42.2\%). The remaining $\sim$17\% comprises a long tail of ornamental and non-native genera (e.g.\ hawthorn, privet, sweetgum, pepper) that are not individually modeled and are assigned to the \emph{Other} class. On the larger Stanford core, tiled SAM detection identifies on the order of $10^3$ building rooftops and $\sim$$10^4$ tree canopies, giving comprehensive coverage of the full campus. Because tree detection on the dense Stanford imagery placed many canopy candidates on top of rooftops, we apply a geometric filter after building detection: a candidate tree is discarded when more than half of its canopy disk area falls inside any detected building footprint (evaluated by area-weighted sampling of the disk against the building polygons). This removed roughly 43\% of the raw Stanford canopies (from $\sim$9{,}900 to $\sim$5{,}650), eliminating rooftop false positives while retaining trees in courtyards, streets, and open ground. The surviving Stanford canopies are labeled against the six most abundant genera reported for the campus \citep{stanfordtrees, stanfordfacops}---Coast Live Oak (the single most numerous species, $\sim$40\% of the population), Canary Island Palm, Eucalyptus, Coast Redwood, Valley Oak, and Olive---with all remaining genera assigned to \emph{Other}. Detection and imagery are cached per campus, so no machine-learning model runs on the live server.
 
 \subsection{Seasonal Concentration}
 
@@ -677,6 +688,16 @@ N.~Helbig, B.~Vogel, H.~Vogel, F.~Fiedler.
 Palo Alto Unified School District.
 \newblock Gunn High School arborist survey and tree inventory.
 \newblock Technical report, PAUSD Facilities Department, 2009.
+
+\bibitem[Trees of Stanford(2026)]{stanfordtrees}
+Trees of Stanford and Environs.
+\newblock Encyclopedia of Trees, Shrubs, and Vines (based on R.~Bracewell, \emph{Trees of Stanford and Environs}).
+\newblock \url{https://trees.stanford.edu/}, accessed 2026.
+
+\bibitem[Stanford LBRE(2026)]{stanfordfacops}
+Stanford Land, Buildings \& Real Estate, Facilities Operations.
+\newblock Stanford Trees: campus urban forest inventory.
+\newblock \url{https://facops.stanford.edu/stanford-trees}, accessed 2026.
 
 \end{thebibliography}
 
