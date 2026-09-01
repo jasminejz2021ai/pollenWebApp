@@ -28,10 +28,10 @@
 \maketitle
 
 \begin{abstract}
-We present Campus AeroAllergen Mapping (CAM), a web-based system for modeling hyperlocal pollen dispersion across a school campus at meter-scale resolution. The framework integrates a steady-state Gaussian plume model with Schulman-Scire building downwash corrections to compute pollen concentration at student breathing height ($z = 1.5$~m). Pollen sources are automatically identified from high-resolution satellite imagery using color-based segmentation with watershed splitting, refined through iterative human-in-the-loop calibration. Temporal emission variability is captured by species-specific Gaussian phenological gate functions. Building footprints detected from satellite imagery define indoor exclusion zones where concentration is zeroed. Applied to a 25-hectare high school campus containing 1,018 verified trees across 6 allergenic genera, the system produces real-time concentration fields at 5.3~m spatial resolution with sub-second computation time. A fixed annual color scale enables intuitive seasonal comparison, revealing that summer concentrations are approximately 6\% of the spring peak. The system integrates exposure along student walking paths to report lower-exposure routes; these predictions have not yet been validated against measured pollen counts.
+We present Campus AeroAllergen Mapping (CAM), a web-based system for modeling hyperlocal pollen dispersion across a school campus at meter-scale resolution. The framework couples a two-dimensional potential-flow wind field, which deflects and channels the wind around building footprints, with a steady-state Gaussian plume model that disperses pollen along the local flow, evaluating concentration at student breathing height ($z = 1.5$~m). Individual tree canopies are identified from high-resolution satellite imagery using color-based segmentation with watershed splitting, and building rooftops are detected with the Segment Anything Model (SAM); both are refined through human-in-the-loop correction. Temporal emission variability is captured by species-specific Gaussian phenological gate functions, and building footprints define indoor exclusion zones where concentration is zeroed. The system is applied to two campuses---Henry M. Gunn High School (Palo Alto, CA) and the Stanford University core---modeling thousands of individual trees and buildings, and produces concentration fields at meter scale in a few seconds. A fixed annual color scale enables intuitive seasonal comparison, showing summer concentrations at roughly 6\% of the spring peak. The system integrates exposure along student walking paths to report lower-exposure routes; these predictions have not yet been validated against measured pollen counts.
 \end{abstract}
 
-\noindent\textbf{Keywords:} Gaussian plume model, pollen dispersion, aeroallergen mapping, building wake effects, satellite vegetation detection, phenological modeling
+\noindent\textbf{Keywords:} potential-flow wind field, Gaussian plume model, pollen dispersion, aeroallergen mapping, satellite vegetation detection, deep-learning segmentation, phenological modeling
 
 \vspace{0.5cm}
 
@@ -41,14 +41,14 @@ Allergic rhinitis affects 10--30\% of the global population, with airborne polle
 
 Existing pollen monitoring relies on regional stations reporting area-averaged counts at temporal resolutions of hours to days \citep{sofiev2013}. These measurements cannot resolve the hyperlocal concentration gradients determining individual exposure during a 5-minute walking transit. We address this gap by developing a physics-based framework that:
 \begin{enumerate}
-    \item Solves the atmospheric advection-diffusion equation analytically at meter-scale resolution;
-    \item Accounts for building-induced flow modifications using empirical downwash models;
-    \item Automatically identifies pollen sources from satellite imagery;
+    \item Computes a 2D potential-flow wind field that deflects and channels the wind around campus buildings;
+    \item Solves the atmospheric advection-diffusion equation analytically (Gaussian plume) at meter-scale resolution, driven by the local wind at each source;
+    \item Identifies pollen sources (tree canopies) and building rooftops from satellite imagery, the latter with a deep-learning segmentation model;
     \item Modulates emissions temporally using species-specific phenological functions;
     \item Masks indoor building volumes from the exposure field.
 \end{enumerate}
 
-The system is deployed at Henry M. Gunn High School (Palo Alto, CA), a 25-hectare campus containing over 1,000 trees spanning multiple allergenic genera.
+The system is deployed on two campuses of contrasting scale and layout: Henry M. Gunn High School (Palo Alto, CA), a 25-hectare campus, and the core of Stanford University; together they contain thousands of individually mapped trees and buildings.
 
 \section{Atmospheric Dispersion Model}
 
@@ -389,27 +389,22 @@ F & 0.04 & 0.894 & 0.016 & 0.894 \\
 \end{tabular}
 \end{table}
 
-\subsection{Building Wake Modifications}
+\subsection{2D Potential-Flow Wind Field Around Buildings}
+\label{sec:potentialflow}
 
-Campus structures create aerodynamic disturbances modifying local transport. We implement the Schulman-Scire downwash model \citep{schulman1980}:
-
-\subsubsection{Modified Dispersion Coefficients}
-For receptors influenced by a building of height $H_b$ and width $W_b$:
-\begin{align}
-\sigma_{y'} &= \sqrt{\sigma_y^2 + \frac{W_b^2}{4\pi}} \label{eq:sigy_mod} \\
-\sigma_{z'} &= \sqrt{\sigma_z^2 + \frac{H_b^2}{4\pi}} \label{eq:sigz_mod}
-\end{align}
-
-\subsubsection{Cavity Concentration}
-Within the recirculation zone ($x' \leq 3H_b$), turbulent mixing produces uniform concentration:
+Rather than treating the wind as spatially uniform, we compute a two-dimensional wind field that deflects and channels around the campus buildings, and use the \emph{local} wind at each tree to drive that tree's plume. We model the horizontal flow as incompressible and irrotational (potential flow), so the velocity is the gradient of a scalar velocity potential $\phi$ satisfying Laplace's equation:
 \begin{equation}
-C_{cavity} = \frac{Q}{B_e \cdot H_b \cdot W_b \cdot U}
-\label{eq:cavity}
+\nabla^2 \phi = 0, \qquad (u, v) = \left(\frac{\partial \phi}{\partial x}, \frac{\partial \phi}{\partial y}\right).
+\label{eq:laplace}
 \end{equation}
-where $B_e \in [0.5, 0.7]$ is an empirical aerodynamic fraction.
+We impose a uniform free stream $(u_\infty, v_\infty)$ from the ambient wind on the domain boundary (Dirichlet), and a no-penetration condition on building walls, $\partial \phi / \partial n = 0$ (Neumann), which forces the flow to go around rather than through each footprint. Equation~\eqref{eq:laplace} is solved on the same $120 \times 120$ grid used for concentration by successive over-relaxation, with building cells rasterized from the detected footprints (Section~\ref{sec:buildings}). The resulting field speeds up where the flow is squeezed between buildings and slows near windward faces, reproducing the channeling and diversion that a uniform wind cannot.
 
-\subsubsection{Wake Damping}
-A binary mask $M_{wake}(x,y)$ identifies cells in building shadows, where wind velocity is damped by 60\% and deposition enhanced by $2.5\times$.
+\medskip
+\noindent\textbf{Honest limitation.} Potential flow is inviscid: it has no boundary-layer separation, and therefore no turbulent wake or recirculation zone behind a building. It captures how wind is \emph{diverted} by obstacles but not the low-velocity, pollen-trapping lee zone, which would require a viscous (e.g.\ RANS/CFD) treatment beyond the scope of a real-time system. It is used here as a computationally cheap, physically motivated approximation to spatial wind variation.
+
+\subsection{Coupling to the Gaussian Plume}
+
+The potential-flow field supplies the wind; the Gaussian plume (Eq.~\eqref{eq:plume}) supplies the dispersion. For each source $i$ at location $(x_i, y_i)$, we sample the local wind $(u_i, v_i)$ from the field at that cell and convert it to a local speed $U_i = \sqrt{u_i^2 + v_i^2}$ and direction $\theta_i$. The plume for source $i$ is then evaluated with $(U_i, \theta_i)$ in place of a single campus-wide wind, so plumes bend and stretch according to the flow around nearby buildings. (For comparison, the system also retains a simpler uniform-wind mode with empirical building-downwash corrections, but the potential-flow coupling above is the default.)
 
 \subsection{Multi-Source Superposition}
 
@@ -422,10 +417,11 @@ evaluated via NumPy vectorized broadcasting over the full $120 \times 120$ spati
 
 \subsection{Building Footprint Masking}
 
-At $z = 1.5$~m within a building, there is no outdoor air exposure. Building rooftops detected from satellite imagery (Section~\ref{sec:buildings}) define a binary mask:
+At $z = 1.5$~m within a building, there is no outdoor air exposure. Building rooftops detected from satellite imagery (Section~\ref{sec:buildings}) are rasterized to a binary mask, and the concentration inside them is zeroed:
 \begin{equation}
-C_{masked}(x,y) = C_{total}(x,y) \cdot \left(1 - M_{building}(x,y)\right)
+C_{masked}(x,y) = C_{total}(x,y) \cdot \left(1 - M_{building}(x,y)\right).
 \end{equation}
+The mask is computed directly from the current building polygons, so it always matches the buildings displayed on the map.
 
 \section{Phenological Emission Model}
 
@@ -543,24 +539,18 @@ S(x,y) = \max(g_e, 0) \cdot \frac{\max(155 - \bar{I}, 0)}{120}
 \end{equation}
 convolved with a Gaussian ($\sigma = 4$~px). Local maxima with minimum spacing of 7~pixels identify individual tree centers. Canopy radius is estimated from the score falloff profile.
 
-\subsection{Human-in-the-Loop Calibration}
-
-The detection undergoes iterative refinement:
-\begin{enumerate}
-    \item Automated detection identifies candidates
-    \item Users delete false positives via interactive map
-    \item Verified positions persist and inform threshold updates
-    \item Three rounds achieved $<5\%$ false positive rate
-\end{enumerate}
-
-\subsection{Building Rooftop Detection}
+\subsection{Building Rooftop Detection with Deep-Learning Segmentation}
 \label{sec:buildings}
 
-Building footprints are identified as connected regions satisfying:
-\begin{equation}
-(\text{saturation} < 30) \wedge (\bar{I} > 160) \wedge (g_e < 8)
-\end{equation}
-with minimum area 800~pixels ($\approx 20$~m$^2$).
+Rooftops are harder to isolate by color alone than tree canopies, because roofs, pavement, and dry ground occupy overlapping color ranges. We therefore detect buildings with the Segment Anything Model (SAM) \citep{kirillov2023}, a pretrained promptable segmentation network. SAM's automatic mask generator proposes class-agnostic masks over the campus image; we then retain only masks that look like rooftops, using a color test (gray/white or warm red-tile roofs, with vegetation excluded), a building-scale size test, and a compactness test. Because SAM downsamples its input internally, we run it on a grid of overlapping image tiles so that small rooftops are resolved at higher effective resolution, then merge detections with spatial de-duplication. Each retained mask is reduced to a rotated minimum-area rectangle, so angled and non-axis-aligned buildings are represented at their true orientation. SAM inference is run once at cache-generation time and the results are stored; the deployed server never runs the network.
+
+\subsection{Human-in-the-Loop Calibration}
+
+Both tree and building detections undergo iterative refinement: automated detection proposes candidates, a reviewer deletes false positives and adds or reshapes footprints through an interactive map editor (adjusting each building's name, floor count, footprint, and rotation), and the corrected set is persisted to the detection cache that the server serves. For each building the height is taken as (floors $\times$ 3~m), which sets the indoor exclusion volume.
+
+\subsection{Multi-Campus Imagery}
+
+The pipeline is campus-agnostic: a campus is defined by its geographic bounds, from which the satellite image and detections are generated. Gunn High School uses Esri World Imagery; the Stanford core uses USGS NAIP imagery (whose true-color rendering shows the characteristic red-tile roofs), fetched seam-free by stitching Web-Mercator tiles.
 
 \section{Exposure Assessment}
 
@@ -579,7 +569,7 @@ Dose is mapped to actionable risk levels: Low ($D < 50$), Moderate ($50$--$200$)
 
 \subsection{Detection Performance}
 
-After three calibration rounds, the system identifies 1,018 trees: 414 Coast Live Oak, 239 Redwood, 159 Valley Oak, 110 Pine, 76 Sycamore, and 20 Chinese Elm.
+On the Gunn campus the detection pipeline maps roughly 1{,}000 trees across six allergenic genera (Coast Live Oak, Coast Redwood, Valley Oak, Pine, Western Sycamore, and Chinese Elm) together with the campus buildings; the exact counts evolve as the set is refined through the interactive editor. On the larger Stanford core, tiled SAM detection identifies on the order of $10^3$ building rooftops and $\sim$$10^4$ tree canopies, giving comprehensive coverage of the full campus. Detection and imagery are cached per campus, so no machine-learning model runs on the live server.
 
 \subsection{Seasonal Concentration}
 
@@ -592,11 +582,11 @@ Using a fixed scale (500~grains/m$^3$ = spring peak):
 
 \subsection{Spatial Patterns}
 
-The concentration field exhibits: (i) plume elongation along prevailing wind; (ii) zero concentration over building footprints; (iii) enhanced accumulation in building wake zones; (iv) elevated concentrations in oak-dense corridors.
+The concentration field exhibits: (i) plumes bending along the potential-flow streamlines as the wind is diverted around buildings; (ii) zero concentration over building footprints; (iii) locally elevated concentration where flow is channeled between closely spaced buildings; and (iv) elevated concentrations in oak-dense corridors.
 
 \section{Discussion}
 
-The Gaussian plume approach provides a computationally efficient ($<500$~ms per field computation) approximation suitable for real-time interactive applications. Key limitations include the assumption of spatially uniform wind (neglecting building-channeled flows that would require CFD), the RGB-only species classification (improved with hyperspectral data), and absence of ground-truth pollen measurements for quantitative validation.
+The coupled potential-flow and Gaussian-plume approach is computationally efficient (a few seconds per full field, even with thousands of sources) and suitable for real-time interactive use. It captures how wind is diverted and channeled around buildings, which a spatially uniform wind cannot. Its key physical limitation is that potential flow is inviscid: it produces no turbulent wake or recirculation behind buildings, so pollen trapping in lee zones is not represented; a viscous CFD treatment would be required for that. Other limitations include RGB-only tree-species classification (improvable with hyperspectral data), uniform assumed building heights where floor counts are unknown, and the absence of ground-truth pollen measurements for quantitative validation.
 
 The human-in-the-loop calibration workflow drove most of the accuracy gain: automated detection alone achieved approximately 75\% precision, improved to $>95\%$ after three interactive correction rounds. For campus-scale applications, then, semi-automated approaches combining algorithmic detection with targeted human verification are more practical than fully autonomous methods.
 
@@ -604,7 +594,7 @@ The fixed annual scale reveals that allergy risk communication should emphasize 
 
 \section{Conclusion}
 
-We built a complete pipeline for hyperlocal pollen dispersion modeling, from satellite-based source identification to physics-based atmospheric transport to path-integrated exposure. The system resolves concentration gradients at 5-meter scale across a 25-hectare campus with 1,018 individually mapped pollen sources and recomputes the full field in under 500~ms as wind and season change. Whether the routes it recommends actually reduce measured exposure is the validation step that remains.
+We built a complete pipeline for hyperlocal pollen dispersion modeling, from satellite-based source identification, through a potential-flow wind field coupled to Gaussian-plume transport, to path-integrated exposure. The system resolves concentration gradients at meter scale across two campuses of contrasting scale---Gunn High School and the Stanford core---with thousands of individually mapped trees and buildings, and recomputes the full field in a few seconds as wind and season change. Whether the routes it recommends actually reduce measured exposure is the validation step that remains.
 
 \section*{Data Availability}
 
@@ -655,6 +645,11 @@ K.~Bastl, M.~Kmenta, U.~Berger.
 S.~Beucher and F.~Meyer.
 \newblock The morphological approach to segmentation: the watershed transformation.
 \newblock In \emph{Mathematical Morphology in Image Processing}, pp. 433--481, 1992.
+
+\bibitem[Kirillov et al.(2023)]{kirillov2023}
+A.~Kirillov, E.~Mintun, N.~Ravi, et al.
+\newblock Segment Anything.
+\newblock In \emph{Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)}, 2023.
 
 \bibitem[Helbig et al.(2004)]{helbig2004}
 N.~Helbig, B.~Vogel, H.~Vogel, F.~Fiedler.

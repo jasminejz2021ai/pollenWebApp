@@ -1,7 +1,7 @@
 import { useEffect, useRef, useMemo, useState, useCallback } from 'react';
 import {
   MapContainer, ImageOverlay, Polygon, Popup,
-  useMap, useMapEvents, ZoomControl, Tooltip,
+  useMap, useMapEvents, ZoomControl, Tooltip, Marker,
 } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -552,6 +552,9 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
   const [detectedTrees, setDetectedTrees] = useState<DetectedFeature[]>([]);
   const [detectedBuildings, setDetectedBuildings] = useState<DetectedFeature[]>([]);
   const [detecting, setDetecting] = useState(true);
+  const [movingTrees, setMovingTrees] = useState(false);
+  const [legendOpen, setLegendOpen] = useState(true);
+  const [heatmapInfoOpen, setHeatmapInfoOpen] = useState(true);
 
   const campusKey = campus?.key || 'gunn';
 
@@ -598,6 +601,22 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
         next.polygon = circlePolygon(t.lat, t.lng, patch.radius_m);
       }
       return next;
+    });
+    setDetectedTrees(updated);
+    fetch(`${API_BASE}/detect/update?campus=${campusKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trees: updated }),
+    }).catch(() => {});
+  };
+
+  // Move a tree to a new location (lat/lng); regenerate its circular footprint
+  // and persist. Called once when a drag finishes.
+  const updateTreePosition = (index: number, lat: number, lng: number) => {
+    const updated = detectedTrees.map((t, i) => {
+      if (i !== index) return t;
+      const r = t.radius_m ?? 4;
+      return { ...t, lat, lng, polygon: circlePolygon(lat, lng, r) };
     });
     setDetectedTrees(updated);
     fetch(`${API_BASE}/detect/update?campus=${campusKey}`, {
@@ -723,6 +742,14 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
         >
           {editingShape ? 'Editing shapes (done)' : 'Edit Shape'}
         </button>
+        <button
+          onClick={() => { setMovingTrees(!movingTrees); setShowDetected(true); }}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+            movingTrees ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-700 border border-slate-200'
+          }`}
+        >
+          {movingTrees ? 'Moving trees (done)' : 'Move Trees'}
+        </button>
         <div className="w-px h-5 bg-slate-200 mx-1" />
         <TestModePanel
           enabled={testEnabled}
@@ -801,9 +828,9 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
         {showDetected && detectedTrees.map((tree, i) => {
           const species = SPECIES_INFO[tree.species_key || 'coast_live_oak'];
           const speciesColors: Record<string, string> = {
-            valley_oak: '#dc2626', coast_live_oak: '#ef4444', redwood: '#166534',
-            eucalyptus: '#6b7280', pine: '#064e3b', chinese_elm: '#ca8a04',
-            sycamore: '#a16207', perennial_grass: '#84cc16', palm: '#0891b2',
+            valley_oak: '#dc2626', coast_live_oak: '#ef4444', redwood: '#a855f7',
+            eucalyptus: '#6b7280', pine: '#f97316', chinese_elm: '#eab308',
+            sycamore: '#06b6d4', perennial_grass: '#84cc16', palm: '#ec4899',
             other: '#22c55e',
           };
           const color = speciesColors[tree.species_key || ''] || '#22c55e';
@@ -811,8 +838,15 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
             <Polygon
               key={`tree-${i}`}
               positions={tree.polygon as [number, number][]}
-              pathOptions={{ color, weight: 2, fillColor: color, fillOpacity: 0.3 }}
+              pathOptions={{
+                color,
+                weight: 2,
+                fillColor: color,
+                fillOpacity: movingTrees ? 0.15 : 0.3,
+                dashArray: movingTrees ? '4 3' : undefined,
+              }}
             >
+              {!movingTrees && (
               <Popup minWidth={200} maxWidth={240} autoPan={true} keepInView={true} autoPanPadding={[20, 20]}>
                 <TreeEditor
                   tree={tree}
@@ -822,7 +856,41 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
                   onDelete={deleteTree}
                 />
               </Popup>
+              )}
             </Polygon>
+          );
+        })}
+
+        {/* Draggable handles for moving trees (only in Move Trees mode) */}
+        {showDetected && movingTrees && detectedTrees.map((tree, i) => {
+          const speciesColors: Record<string, string> = {
+            valley_oak: '#dc2626', coast_live_oak: '#ef4444', redwood: '#a855f7',
+            eucalyptus: '#6b7280', pine: '#f97316', chinese_elm: '#eab308',
+            sycamore: '#06b6d4', perennial_grass: '#84cc16', palm: '#ec4899',
+            other: '#22c55e',
+          };
+          const color = speciesColors[tree.species_key || ''] || '#22c55e';
+          const icon = L.divIcon({
+            className: 'tree-drag-handle',
+            html: `<div style="width:14px;height:14px;border-radius:50%;background:${color};border:2px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,0.4);cursor:grab;"></div>`,
+            iconSize: [14, 14],
+            iconAnchor: [7, 7],
+          });
+          return (
+            <Marker
+              key={`tree-handle-${i}`}
+              position={[tree.lat, tree.lng]}
+              icon={icon}
+              draggable={true}
+              eventHandlers={{
+                dragend: (e) => {
+                  const ll = (e.target as L.Marker).getLatLng();
+                  updateTreePosition(i, ll.lat, ll.lng);
+                },
+              }}
+            >
+              <Tooltip direction="top" offset={[0, -8]}>Drag to move this tree</Tooltip>
+            </Marker>
           );
         })}
       </MapContainer>
@@ -831,6 +899,13 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
       {addingBuilding && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-amber-500 text-white rounded-lg px-4 py-2 shadow-lg text-xs font-semibold">
           Click anywhere on the map to add a building. Click "Add Building" again to finish.
+        </div>
+      )}
+
+      {/* Move-trees mode hint */}
+      {movingTrees && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-emerald-600 text-white rounded-lg px-4 py-2 shadow-lg text-xs font-semibold">
+          Drag any circle's center dot to move that tree. Click "Move Trees" again to finish.
         </div>
       )}
 
@@ -853,38 +928,80 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
         </div>
       )}
 
-      {/* Legend */}
+      {/* Legend (collapsible so it doesn't block the map) */}
       {!detecting && showDetected && (
-        <div className="absolute top-4 left-4 z-[1000] bg-white/95 backdrop-blur-sm rounded-lg p-3 shadow-lg text-xs">
-          <p className="font-semibold text-slate-700 mb-2">Satellite Detection</p>
-          <div className="flex items-center gap-2">
-            <span className="w-4 h-3 border-2 border-green-500 bg-green-200/60 inline-block rounded-full"></span>
-            <span>Tree Canopy ({detectedTrees.length} detected)</span>
+        legendOpen ? (
+          <div className="absolute top-4 left-4 z-[1000] bg-white/95 backdrop-blur-sm rounded-lg p-3 shadow-lg text-xs">
+            <div className="flex items-center justify-between gap-3 mb-2">
+              <p className="font-semibold text-slate-700">Satellite Detection</p>
+              <button
+                onClick={() => setLegendOpen(false)}
+                className="text-slate-400 hover:text-slate-700 leading-none text-sm font-bold"
+                title="Minimize"
+              >
+                −
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="w-4 h-3 border-2 border-green-500 bg-green-200/60 inline-block rounded-full"></span>
+              <span>Tree Canopy ({detectedTrees.length} detected)</span>
+            </div>
           </div>
-        </div>
+        ) : (
+          <button
+            onClick={() => setLegendOpen(true)}
+            className="absolute top-4 left-4 z-[1000] bg-white/95 backdrop-blur-sm rounded-lg px-2.5 py-1.5 shadow-lg text-xs font-semibold text-slate-700 hover:bg-white flex items-center gap-1.5"
+            title="Show detection legend"
+          >
+            <span className="w-3 h-2.5 border-2 border-green-500 bg-green-200/60 inline-block rounded-full"></span>
+            Detection
+          </button>
+        )
       )}
 
-      {/* Heatmap info */}
+      {/* Heatmap info (collapsible so it doesn't block the map) */}
       {showHeatmap && heatmap && (
-        <div className="absolute bottom-4 left-4 z-[1000] bg-white/95 backdrop-blur-sm rounded-lg p-3 shadow-lg text-xs">
-          <p className="font-semibold text-slate-700 mb-1">Pollen Concentration (Today)</p>
-          <div className="flex items-center gap-1">
-            <span className="text-green-600">Low</span>
-            <div className="w-20 h-2 rounded-full" style={{
+        heatmapInfoOpen ? (
+          <div className="absolute bottom-4 left-4 z-[1000] bg-white/95 backdrop-blur-sm rounded-lg p-3 shadow-lg text-xs">
+            <div className="flex items-center justify-between gap-3 mb-1">
+              <p className="font-semibold text-slate-700">Pollen Concentration (Today)</p>
+              <button
+                onClick={() => setHeatmapInfoOpen(false)}
+                className="text-slate-400 hover:text-slate-700 leading-none text-sm font-bold"
+                title="Minimize"
+              >
+                −
+              </button>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="text-green-600">Low</span>
+              <div className="w-20 h-2 rounded-full" style={{
+                background: 'linear-gradient(to right, #22c55e, #facc15, #f97316, #dc2626)'
+              }} />
+              <span className="text-red-700">High</span>
+            </div>
+            <p className="text-slate-500 mt-1">
+              Current: {heatmap.max_concentration.toFixed(1)} grains/m³
+            </p>
+            <p className="text-slate-500">
+              vs. Spring peak: {((heatmap as any).pct_of_peak || 0)}%
+            </p>
+            <p className="text-slate-400 text-[10px] mt-0.5">
+              Scale fixed to 500 grains/m³ (spring max)
+            </p>
+          </div>
+        ) : (
+          <button
+            onClick={() => setHeatmapInfoOpen(true)}
+            className="absolute bottom-4 left-4 z-[1000] bg-white/95 backdrop-blur-sm rounded-lg px-2.5 py-1.5 shadow-lg text-xs font-semibold text-slate-700 hover:bg-white flex items-center gap-1.5"
+            title="Show pollen concentration key"
+          >
+            <span className="w-8 h-2 rounded-full inline-block" style={{
               background: 'linear-gradient(to right, #22c55e, #facc15, #f97316, #dc2626)'
             }} />
-            <span className="text-red-700">High</span>
-          </div>
-          <p className="text-slate-500 mt-1">
-            Current: {heatmap.max_concentration.toFixed(1)} grains/m³
-          </p>
-          <p className="text-slate-500">
-            vs. Spring peak: {((heatmap as any).pct_of_peak || 0)}%
-          </p>
-          <p className="text-slate-400 text-[10px] mt-0.5">
-            Scale fixed to 500 grains/m³ (spring max)
-          </p>
-        </div>
+            Pollen
+          </button>
+        )
       )}
       </div>
     </div>
