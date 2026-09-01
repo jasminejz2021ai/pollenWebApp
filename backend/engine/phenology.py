@@ -259,12 +259,21 @@ def build_flora_matrix(
         current_day = day_of_year()
 
     NOMINAL_RADIUS_M = 4.0
+    # Generic profile for user-reclassified "Other"/unknown trees: a moderate
+    # emitter with a broad spring window so the tree still contributes to
+    # dispersion instead of being silently dropped.
+    GENERIC_PROFILE = {
+        "base_emission": 300.0,
+        "potency_weight": 3.0,
+        "start_day": 60,
+        "end_day": 151,
+        "peak_day": 105,
+        "sigma_t": 25.0,
+    }
     rows = []
     for tree in tree_locations:
         species_key = tree["species_key"]
-        if species_key not in BOTANICAL_CATALOG:
-            continue
-        profile = BOTANICAL_CATALOG[species_key]
+        profile = BOTANICAL_CATALOG.get(species_key, GENERIC_PROFILE)
         # Scale emission by canopy area (~radius^2) relative to a nominal tree;
         # clamped so a hand-edited radius cannot produce absurd emission.
         radius_m = tree.get("radius_m")

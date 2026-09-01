@@ -109,7 +109,14 @@ const SPECIES_INFO: Record<string, { name: string; scientific: string; family: s
   chinese_elm: { name: "Chinese Elm", scientific: "Ulmus parvifolia", family: "Ulmaceae", potency: 3.0 },
   sycamore: { name: "Western Sycamore", scientific: "Platanus racemosa", family: "Platanaceae", potency: 3.5 },
   perennial_grass: { name: "Turf Grass", scientific: "Poaceae spp.", family: "Poaceae", potency: 4.0 },
+  other: { name: "Other / Unknown", scientific: "—", family: "—", potency: 3.0 },
 };
+
+// Species offered in the tree editor dropdown (the six the detector assigns),
+// plus an "Other" catch-all for anything the user wants to reclassify.
+const SPECIES_OPTIONS: string[] = [
+  'coast_live_oak', 'valley_oak', 'redwood', 'sycamore', 'pine', 'chinese_elm', 'other',
+];
 
 function HeatmapOverlay({ heatmap, visible, bounds, buildings }: { heatmap: HeatmapResponse | null; visible: boolean; bounds: [[number, number], [number, number]]; buildings: DetectedFeature[] }) {
   const map = useMap();
@@ -391,19 +398,36 @@ function TreeEditor({
   tree: DetectedFeature;
   index: number;
   species?: { name: string; scientific: string; family: string; potency: number };
-  onApply: (index: number, radius_m: number) => void;
+  onApply: (index: number, patch: { radius_m?: number; species_key?: string }) => void;
   onDelete: (index: number) => void;
 }) {
   const [radius, setRadius] = useState(Math.round((tree.radius_m ?? 4) * 10) / 10);
-  const apply = (r: number) => onApply(index, r);
+  const [speciesKey, setSpeciesKey] = useState(tree.species_key ?? 'coast_live_oak');
+  const info = SPECIES_INFO[speciesKey] ?? species;
 
   return (
-    <div className="text-xs min-w-[180px] text-slate-900">
-      <strong className="text-sm">{species?.name || 'Tree'}</strong><br />
-      <em className="text-slate-500">{species?.scientific}</em>
+    <div className="text-xs min-w-[190px] text-slate-900">
+      <strong className="text-sm">{info?.name || 'Tree'}</strong><br />
+      <em className="text-slate-500">{info?.scientific}</em>
       <div className="mt-1 space-y-0.5">
-        <div>Family: <span className="font-medium">{species?.family}</span></div>
-        <div>Allergen potency: <span className="font-medium">{species?.potency}/5</span></div>
+        <div>Family: <span className="font-medium">{info?.family}</span></div>
+        <div>Allergen potency: <span className="font-medium">{info?.potency}/5</span></div>
+      </div>
+      <div className="mt-2">
+        <label className="block text-slate-700 mb-0.5">Species</label>
+        <select
+          value={speciesKey}
+          onChange={(e) => {
+            const key = e.target.value;
+            setSpeciesKey(key);
+            onApply(index, { species_key: key });
+          }}
+          className="w-full border border-slate-300 rounded px-1.5 py-1 bg-white"
+        >
+          {SPECIES_OPTIONS.map((key) => (
+            <option key={key} value={key}>{SPECIES_INFO[key]?.name ?? key}</option>
+          ))}
+        </select>
       </div>
       <div className="mt-2">
         <div className="flex items-center justify-between mb-0.5">
@@ -415,7 +439,7 @@ function TreeEditor({
                 const r = parseFloat(e.target.value);
                 if (!Number.isNaN(r)) setRadius(r);
               }}
-              onBlur={() => apply(Math.min(30, Math.max(0.5, radius)))}
+              onBlur={() => onApply(index, { radius_m: Math.min(30, Math.max(0.5, radius)) })}
               className="w-14 border border-slate-300 rounded px-1 py-0.5 text-right"
             />
             <span className="text-slate-500">m</span>
@@ -424,8 +448,8 @@ function TreeEditor({
         <input
           type="range" min={0.5} max={30} step={0.5} value={radius}
           onChange={(e) => setRadius(parseFloat(e.target.value))}
-          onMouseUp={() => apply(radius)}
-          onTouchEnd={() => apply(radius)}
+          onMouseUp={() => onApply(index, { radius_m: radius })}
+          onTouchEnd={() => onApply(index, { radius_m: radius })}
           className="w-full accent-emerald-600"
         />
       </div>
@@ -562,15 +586,18 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
     }).catch(() => {});
   };
 
-  // Edit a tree's canopy radius; regenerate its circular footprint and persist.
-  const updateTree = (index: number, radius_m: number) => {
+  // Edit a tree's canopy radius and/or species; regenerate its circular
+  // footprint (when radius changes) and persist.
+  const updateTree = (index: number, patch: { radius_m?: number; species_key?: string }) => {
     const updated = detectedTrees.map((t, i) => {
       if (i !== index) return t;
-      return {
-        ...t,
-        radius_m,
-        polygon: circlePolygon(t.lat, t.lng, radius_m),
-      };
+      const next = { ...t };
+      if (patch.species_key !== undefined) next.species_key = patch.species_key;
+      if (patch.radius_m !== undefined) {
+        next.radius_m = patch.radius_m;
+        next.polygon = circlePolygon(t.lat, t.lng, patch.radius_m);
+      }
+      return next;
     });
     setDetectedTrees(updated);
     fetch(`${API_BASE}/detect/update?campus=${campusKey}`, {
