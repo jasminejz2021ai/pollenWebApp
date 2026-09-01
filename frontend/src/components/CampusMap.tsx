@@ -814,12 +814,12 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
         {showDetected && detectedTrees.map((tree, i) => {
           const species = SPECIES_INFO[tree.species_key || 'coast_live_oak'];
           const speciesColors: Record<string, string> = {
-            valley_oak: '#dc2626', coast_live_oak: '#ef4444', redwood: '#a855f7',
+            valley_oak: '#166534', coast_live_oak: '#166534', redwood: '#dc2626',
             eucalyptus: '#6b7280', pine: '#f97316', chinese_elm: '#eab308',
             sycamore: '#06b6d4', perennial_grass: '#84cc16', palm: '#ec4899',
-            cedar: '#0d9488', other: '#22c55e',
+            cedar: '#7c3aed', other: '#86efac',
           };
-          const color = speciesColors[tree.species_key || ''] || '#22c55e';
+          const color = speciesColors[tree.species_key || ''] || '#86efac';
           return (
             <Polygon
               key={`tree-${i}`}
@@ -850,12 +850,12 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
         {/* Draggable handles for moving trees (only in Move Trees mode) */}
         {showDetected && movingTrees && detectedTrees.map((tree, i) => {
           const speciesColors: Record<string, string> = {
-            valley_oak: '#dc2626', coast_live_oak: '#ef4444', redwood: '#a855f7',
+            valley_oak: '#166534', coast_live_oak: '#166534', redwood: '#dc2626',
             eucalyptus: '#6b7280', pine: '#f97316', chinese_elm: '#eab308',
             sycamore: '#06b6d4', perennial_grass: '#84cc16', palm: '#ec4899',
-            cedar: '#0d9488', other: '#22c55e',
+            cedar: '#7c3aed', other: '#86efac',
           };
-          const color = speciesColors[tree.species_key || ''] || '#22c55e';
+          const color = speciesColors[tree.species_key || ''] || '#86efac';
           const icon = L.divIcon({
             className: 'tree-drag-handle',
             html: `<div style="width:14px;height:14px;border-radius:50%;background:${color};border:2px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,0.4);cursor:grab;"></div>`,
