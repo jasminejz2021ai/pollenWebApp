@@ -804,6 +804,7 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
             valley_oak: '#dc2626', coast_live_oak: '#ef4444', redwood: '#166534',
             eucalyptus: '#6b7280', pine: '#064e3b', chinese_elm: '#ca8a04',
             sycamore: '#a16207', perennial_grass: '#84cc16', palm: '#0891b2',
+            other: '#22c55e',
           };
           const color = speciesColors[tree.species_key || ''] || '#22c55e';
           return (
