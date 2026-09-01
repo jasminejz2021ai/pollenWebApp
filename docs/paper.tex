@@ -188,87 +188,6 @@ where $\alpha = \frac{\pi}{180}(270^\circ - \theta)$ converts the meteorological
     \item If the wind shifts direction, the entire plume rotates to point the new way.
 \end{itemize}
 
-\subsection{Humidity Effects on Pollen Dispersion}
-
-Relative humidity (RH) affects pollen transport through multiple mechanisms that our model incorporates:
-
-\subsubsection{Hygroscopic Swelling}
-
-Pollen grains are hygroscopic---they absorb water vapor from humid air and swell. The effective aerodynamic diameter increases with humidity following a growth factor:
-\begin{equation}
-d_p(RH) = d_{p,dry} \cdot \left(1 + \kappa \cdot \frac{RH}{100 - RH}\right)^{1/3}
-\label{eq:hygroscopic}
-\end{equation}
-where $\kappa$ is the species-specific hygroscopicity parameter ($\kappa \approx 0.05$--$0.15$ for pollen). At 80\% RH, Oak pollen swells from 22~$\mu$m to approximately 25~$\mu$m, increasing its settling velocity by $\sim$30\%:
-\begin{equation}
-v_s(RH) = v_{s,dry} \cdot \left(\frac{d_p(RH)}{d_{p,dry}}\right)^2 \cdot \frac{\rho_p(RH)}{\rho_{p,dry}}
-\end{equation}
-
-The density ratio accounts for water uptake reducing the effective density. The net effect: humid conditions cause pollen to settle faster, reducing far-field concentrations but increasing deposition near the source.
-
-\subsubsection{Humidity-Dependent Emission Suppression}
-
-Most tree species suppress pollen release under high humidity. Anthers (the pollen-bearing structures) require drying to dehisce (split open). The emission rate is modulated by a humidity factor:
-\begin{equation}
-Q_i(t, RH) = Q_i(t) \cdot f_{RH}(RH)
-\label{eq:rh_emission}
-\end{equation}
-where:
-\begin{equation}
-f_{RH}(RH) = \begin{cases}
-1.0 & RH < 50\% \\
-1.0 - 0.8\cdot\dfrac{RH - 50}{50} & 50\% \leq RH < 90\% \\
-0.1 & RH \geq 90\%
-\end{cases}
-\end{equation}
-
-At 50\% RH, emission is unrestricted. At 90\% RH (foggy morning), emission drops to just 10\% of the dry-air maximum. This explains why pollen counts are typically highest on dry, warm afternoons and lowest during humid mornings or after rainfall.
-
-\subsubsection{Osmotic Rupture and Sub-Pollen Particles}
-
-When relative humidity rapidly exceeds $\sim$95\% (e.g., during thunderstorms), pollen grains can undergo \emph{osmotic rupture}: the grain absorbs water faster than its wall can expand, causing it to burst and release hundreds of sub-pollen particles (SPP) of 0.5--4~$\mu$m diameter. These SPPs:
-\begin{itemize}
-    \item Are small enough to penetrate deep into the lower respiratory tract (bronchi and alveoli), unlike intact grains which deposit in the nose/throat
-    \item Have negligible settling velocity ($v_s < 0.01$~cm/s), remaining airborne for hours
-    \item Carry the same allergenic proteins as the parent grain
-    \item Are implicated in ``thunderstorm asthma'' events
-\end{itemize}
-
-We model this as a conditional burst event. If $RH > 95\%$ and $\Delta RH/\Delta t > 10\%$/hr (rapid humidity spike):
-\begin{equation}
-Q_{SPP,i}(t) = N_{SPP} \cdot Q_i(t) \cdot f_{rupture}
-\end{equation}
-where $N_{SPP} \approx 700$ is the number of sub-pollen particles per ruptured grain and $f_{rupture} \approx 0.3$ is the fraction of airborne grains that rupture. The SPPs are then modeled as a separate Gaussian plume with near-zero settling velocity and greatly extended atmospheric lifetime.
-
-\subsubsection{Wet Deposition (Rainfall Washout)}
-
-Rain removes pollen from the atmosphere through below-cloud scavenging. The washout rate is modeled as an additional first-order removal term:
-\begin{equation}
-\lambda_{wet} = \Lambda \cdot P^{0.7}
-\end{equation}
-where $P$ is the rainfall intensity (mm/hr) and $\Lambda \approx 5 \times 10^{-4}$~s$^{-1}$/(mm/hr)$^{0.7}$ is the scavenging coefficient for pollen-sized particles. During moderate rain (5~mm/hr), washout removes pollen with an effective half-life of $\sim$20~minutes, rapidly clearing the atmosphere. The total removal rate becomes:
-\begin{equation}
-\lambda_{total} = \lambda_{dry} + \lambda_{wet}
-\end{equation}
-
-\subsubsection{Implementation}
-
-Our system obtains current relative humidity from the weather API (OpenWeatherMap provides RH as a standard field). The humidity corrections are applied as:
-\begin{enumerate}
-    \item Emission rate adjusted by $f_{RH}$ (Eq.~\ref{eq:rh_emission})
-    \item Settling velocity adjusted by hygroscopic swelling (Eq.~\ref{eq:hygroscopic})
-    \item SPP burst event triggered if RH exceeds 95\% with rapid onset
-    \item Wet deposition added during active precipitation
-\end{enumerate}
-
-On a typical Palo Alto afternoon (RH $\approx$ 40--55\%), humidity corrections are minimal. During marine-layer mornings (RH $\approx$ 80--90\%), emission is suppressed by 50--80\%, significantly reducing campus pollen load---explaining why early-morning commuters often experience fewer symptoms than those arriving mid-morning after the fog burns off.
-
-\begin{figure}[H]
-\centering
-\includegraphics[width=\textwidth]{fig4_humidity.png}
-\caption{Humidity effects on pollen behavior. (a) Emission suppression factor $f_{RH}$: pollen release drops sharply above 50\% RH. (b) Hygroscopic swelling increases grain diameter at high humidity. (c) Resulting increase in gravitational settling velocity.}
-\label{fig:humidity}
-\end{figure}
 
 \subsection{Species-Dependent Particle Dynamics}
 
@@ -619,6 +538,30 @@ The coupled potential-flow and Gaussian-plume approach is computationally effici
 The human-in-the-loop calibration workflow drove most of the accuracy gain: automated detection alone achieved approximately 75\% precision, improved to $>95\%$ after three interactive correction rounds. For campus-scale applications, then, semi-automated approaches combining algorithmic detection with targeted human verification are more practical than fully autonomous methods.
 
 The fixed annual scale reveals that allergy risk communication should emphasize seasonal context: a June reading of 30~grains/m$^3$ might alarm students if presented without reference to the 500~grains/m$^3$ spring peak that constitutes the actual high-risk period.
+
+\subsection{Future Work: Coupling Humidity, Temperature, and Precipitation}
+\label{sec:futurework}
+
+The current model is driven by wind speed, wind direction, and atmospheric stability class. Relative humidity and temperature are retrieved from the weather service and shown to the user, but they do not yet modify the dispersion calculation (temperature only informs the stability-class estimate). A natural and high-value extension is to couple humidity, temperature, and precipitation into emission and removal, and we outline the intended formulation here as future work rather than as an implemented result.
+
+First, most anemophilous species suppress pollen release under high humidity because anthers must dry to dehisce; this could scale emission by a humidity factor,
+\begin{equation}
+Q_i(t, RH) = Q_i(t)\, f_{RH}(RH), \qquad
+f_{RH}(RH) = \begin{cases}
+1.0 & RH < 50\% \\
+1.0 - 0.8\,\dfrac{RH - 50}{50} & 50\% \leq RH < 90\% \\
+0.1 & RH \geq 90\%,
+\end{cases}
+\label{eq:rh_emission_fw}
+\end{equation}
+so that emission falls to $\sim$10\% of its dry-air value in foggy, marine-layer conditions. Second, hygroscopic grains swell in humid air, increasing their settling velocity, $d_p(RH) = d_{p,dry}\,[1 + \kappa\,RH/(100-RH)]^{1/3}$ with $v_s \propto d_p^2$, which would enhance near-source deposition. Third, rainfall scavenges airborne pollen, adding a wet-removal term $\lambda_{wet} = \Lambda P^{0.7}$ (with $P$ the rainfall rate) to the first-order decay. Finally, rapid humidity spikes above $\sim$95\% can rupture grains into respirable sub-pollen particles implicated in ``thunderstorm asthma,'' which could be modeled as a conditional secondary source with near-zero settling velocity. Figure~\ref{fig:humidity_fw} illustrates the qualitative form of the emission-suppression and hygroscopic-swelling responses. Implementing and, critically, validating these couplings against measured pollen and weather time series is a priority for future work.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig4_humidity.png}
+\caption{Proposed humidity coupling (future work; not part of the current model). (a) Emission suppression factor $f_{RH}$: pollen release drops sharply above 50\% RH. (b) Hygroscopic swelling increases grain diameter at high humidity. (c) Resulting increase in gravitational settling velocity.}
+\label{fig:humidity_fw}
+\end{figure}
 
 \section{Conclusion}
 

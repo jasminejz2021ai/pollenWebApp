@@ -26,14 +26,20 @@ def add_methods(doc, docs_dir, heading, para, title_line):
         "stability classes A-F (Table 1). Stability was estimated from wind speed "
         "and cloud cover using Turner's method (5). Species-dependent gravitational "
         "settling was included via Stokes' law, tilting the plume centerline "
-        "downward with distance, and building wakes were represented using the "
-        "Schulman-Scire downwash model (6), which inflates the dispersion "
-        "coefficients near structures and imposes a uniform cavity concentration "
-        "within the near-wake recirculation zone. Because the governing equation is "
-        "linear, the total field from all N sources was obtained by superposition, "
-        "C_total = sum of C_i, evaluated with vectorized array operations over a "
-        "120 x 120 spatial grid (5.3 m resolution). Concentration over detected "
-        "building footprints was set to zero to represent indoor exclusion.")
+        "downward with distance. Rather than assuming a spatially uniform wind, we "
+        "first solved a two-dimensional potential-flow wind field on the same grid "
+        "by treating the horizontal flow as incompressible and irrotational "
+        "(Laplace's equation) with the detected building footprints as "
+        "no-penetration obstacles; this deflects and channels the ambient wind "
+        "around buildings. Each tree's plume was then driven by the local wind "
+        "sampled at its own grid cell, so plumes bend and stretch with the flow. "
+        "Because the governing equation is linear, the total field from all N "
+        "sources was obtained by superposition, C_total = sum of C_i, evaluated with "
+        "vectorized array operations over a 120 x 120 spatial grid. Concentration "
+        "over detected building footprints was set to zero to represent indoor "
+        "exclusion. The model uses wind speed, wind direction, and stability class "
+        "as its meteorological inputs; humidity and temperature are displayed but do "
+        "not currently enter the calculation (see Results and Discussion).")
 
     para(doc, "Phenological emission model", italic=True)
     para(doc,
@@ -43,36 +49,54 @@ def add_methods(doc, docs_dir, heading, para, title_line):
         "truncated Gaussian temporal gate, Gamma_i(t) = exp(-(t - t_peak)^2 / "
         "(2 sigma_t^2)) within the pollination window [t_start, t_end] and zero "
         "otherwise, with t the Julian day of year. Base emission rates, potency "
-        "weights, and phenological windows for the six campus genera were taken from "
+        "weights, and phenological windows for the campus genera were taken from "
         "aerobiological literature and Bay Area regional data (7) (Table 2). "
-        "Relative humidity, obtained from the weather service, further suppressed "
-        "emission (anthers require drying to dehisce) and increased grain settling "
-        "through hygroscopic swelling.")
+        "Trees not confidently assigned to a modeled genus were placed in a generic "
+        "Other class, modeled as a prevalence-weighted blend of each campus's "
+        "unmodeled tail genera so that unclassified canopies still contribute a "
+        "realistic, inventory-grounded background. Relative humidity and temperature "
+        "are retrieved from the weather service and displayed, but do not currently "
+        "modify emission or transport; a humidity coupling (emission suppression, "
+        "hygroscopic swelling, and rainfall washout) is described as future work.")
 
     para(doc, "Satellite-based vegetation detection", italic=True)
     para(doc,
-        "Campus satellite imagery (approximately 0.5 m/pixel) was obtained from the "
-        "Esri World Imagery REST export service for the campus bounding box "
-        "(557 m x 637 m; 1600 x 1398 pixels). Tree-canopy pixels were classified "
-        "with color thresholds calibrated on human-verified samples using green "
-        "excess g_e = g - (r + b)/2 and mean brightness. Adjacent canopies were "
-        "separated using marker-controlled watershed segmentation (8): the binary "
-        "canopy mask was eroded to form seed markers, a Euclidean distance transform "
-        "was computed, and the watershed algorithm segmented individual canopies. "
-        "Each detected canopy was assigned a species using a size- and "
-        "position-based heuristic. Detected canopies were converted from pixel "
-        "coordinates to latitude/longitude and then to local meters relative to the "
-        "campus center for use as plume sources. Building rooftops were detected as "
-        "low-saturation, high-brightness connected regions and used to define the "
-        "indoor exclusion mask.")
+        "Campus satellite imagery (approximately 0.5 m/pixel) was obtained from "
+        "public sources per campus (Esri World Imagery for Gunn; USGS NAIP, stitched "
+        "seam-free from Web-Mercator tiles, for the Stanford core). Tree-canopy "
+        "pixels were classified with color thresholds calibrated on human-verified "
+        "samples using green excess g_e = g - (r + b)/2 and mean brightness. "
+        "Adjacent canopies were separated using marker-controlled watershed "
+        "segmentation (8): the binary canopy mask was eroded to form seed markers, a "
+        "Euclidean distance transform was computed, and the watershed algorithm "
+        "segmented individual canopies. Each detected canopy was assigned a species; "
+        "to keep labels faithful to each campus, species proportions were anchored "
+        "to published tree inventories, and canopies not confidently identified were "
+        "placed in the Other class. Building rooftops, which are hard to separate "
+        "from pavement and dry ground by color alone, were detected with the Segment "
+        "Anything Model (SAM) (9), a pretrained deep-learning segmentation network, "
+        "run on overlapping image tiles so small rooftops resolve at higher "
+        "effective resolution and then merged; retained masks were filtered by "
+        "rooftop color, size, and compactness and reduced to oriented rectangles. "
+        "On the dense Stanford core, tree candidates whose canopy disk overlapped a "
+        "detected building footprint by more than 50 percent were removed as rooftop "
+        "false positives. Detected footprints define the indoor exclusion mask and "
+        "the obstacles for the potential-flow wind field. SAM was run once at "
+        "cache-generation time; the deployed server runs no machine-learning model.")
 
     para(doc, "Human-in-the-loop calibration", italic=True)
     para(doc,
-        "Detection was refined iteratively: automated detection proposed candidate "
-        "trees, a reviewer removed false positives through an interactive map "
-        "interface, and the verified positions were persisted and used to update the "
-        "detection thresholds. Three rounds reduced the false-positive rate from "
-        "approximately 25% to below 5%.")
+        "Detection was refined iteratively through an interactive map editor: "
+        "automated detection proposed candidates, and a reviewer corrected them "
+        "directly on the satellite basemap. For trees this included deleting false "
+        "positives, relocating a canopy, resizing its radius (which rescales that "
+        "tree's emission by canopy area), and reclassifying its species; for "
+        "buildings it included editing each footprint's name, floor count, position, "
+        "and shape, including non-rectangular (parallelogram or trapezoid) "
+        "footprints. Corrections were persisted to the per-campus detection cache "
+        "the server serves, so the physical model always reflects the reviewed "
+        "geometry. Automated detection alone reached roughly 75 percent precision; "
+        "targeted human correction raised it above 95 percent.")
 
     para(doc, "Exposure assessment", italic=True)
     para(doc,
@@ -124,6 +148,8 @@ def add_methods(doc, docs_dir, heading, para, title_line):
         "Beucher, S. and Meyer, F. The morphological approach to segmentation: the "
         "watershed transformation. In Mathematical Morphology in Image Processing, "
         "433-481 (1992).",
+        "Kirillov, A., Mintun, E., Ravi, N., et al. Segment Anything. In Proceedings "
+        "of the IEEE/CVF International Conference on Computer Vision (ICCV) (2023).",
     ]
     for i, r in enumerate(refs, 1):
         para(doc, f"{i}. {r}")
@@ -151,10 +177,11 @@ def add_methods(doc, docs_dir, heading, para, title_line):
          "dashed line marks June 25, when most tree species are dormant and only "
          "Pine retains weak late-season emission."),
         ("fig4_humidity.png",
-         "Figure 4. Modeled humidity effects on pollen behavior. (a) Emission "
-         "suppression factor: pollen release drops sharply above 50% relative "
-         "humidity. (b) Hygroscopic swelling increases grain diameter at high "
-         "humidity. (c) Resulting increase in gravitational settling velocity."),
+         "Figure 4. Proposed humidity coupling (future work; not part of the "
+         "current model). (a) Emission suppression factor: pollen release drops "
+         "sharply above 50% relative humidity. (b) Hygroscopic swelling increases "
+         "grain diameter at high humidity. (c) Resulting increase in gravitational "
+         "settling velocity."),
     ]
     from docx.shared import Inches
     for fname, caption in figs:

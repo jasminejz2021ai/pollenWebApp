@@ -8,26 +8,40 @@ def add_results(doc, heading, para, title_line):
     para(doc,
         "To test whether campus pollen exposure could be predicted from physical "
         "modeling, we first needed the locations of the pollen sources. We detected "
-        "trees from high-resolution satellite imagery using color-based segmentation "
-        "with watershed splitting, followed by three rounds of human verification to "
-        "remove false positives (see Materials and Methods). This process identified "
-        "1,018 trees across six allergenic genera: 414 Coast Live Oak, 239 Coast "
-        "Redwood, 159 Valley Oak, 110 Pine, 76 Western Sycamore, and 20 Chinese Elm. "
-        "Automated detection alone achieved approximately 75% precision; after three "
-        "interactive correction rounds, the false-positive rate fell below 5%, "
-        "indicating that the source map used as input to the physical model was "
-        "reliable.")
+        "tree canopies from high-resolution satellite imagery using color-based "
+        "segmentation with watershed splitting, and building rooftops using the "
+        "Segment Anything Model (SAM), a pretrained deep-learning segmentation "
+        "network, followed by human verification through an interactive map editor "
+        "(see Materials and Methods). To keep the labeling faithful to each real "
+        "campus, we anchored the species mix to published tree inventories. For "
+        "Gunn, the 2009 Palo Alto Unified School District arborist survey of 455 "
+        "numbered trees is dominated by Valley Oak (25.5%), Coast Redwood (20.2%), "
+        "and Coast Live Oak (15.4%), with Cedar, Western Sycamore, and Chinese Elm "
+        "following; all oaks together make up about 42%. We labeled the roughly 900 "
+        "mapped Gunn canopies against these seven allergenic genera and assigned the "
+        "long tail of unmodeled ornamental genera to a generic 'Other' class. For "
+        "the much larger Stanford core, tiled SAM detection identified on the order "
+        "of 3,000 building rooftops and about 9,900 raw tree canopies; after "
+        "geometrically removing canopies that fell mostly on rooftops (about 43% of "
+        "the raw detections, likely false positives), about 5,650 trees remained, "
+        "which we labeled against Stanford's six most abundant genera reported in "
+        "its campus inventory (Coast Live Oak, the single most numerous species at "
+        "about 40%, plus Canary Island Palm, Eucalyptus, Coast Redwood, Valley Oak, "
+        "and Olive).")
 
     para(doc,
-        "We then computed the pollen concentration field by modeling each detected "
-        "tree as a Gaussian plume source and summing the contributions at a student "
-        "breathing height of 1.5 m. The resulting fields displayed the spatial "
-        "structure predicted by advection-diffusion physics (Figure 1). "
-        "Concentration was highest immediately downwind of dense tree clusters and "
-        "fell off as a bell-shaped curve to either side of the plume centerline; "
-        "stronger modeled winds elongated and diluted the plumes, while more stable "
-        "atmospheric conditions confined them into narrow, concentrated bands. These "
-        "patterns match the behavior the Gaussian plume solution predicts.")
+        "We then computed the pollen concentration field by first solving a "
+        "two-dimensional potential-flow wind field that deflects and channels the "
+        "ambient wind around the detected building footprints, and then modeling "
+        "each detected tree as a Gaussian plume driven by the local wind at its "
+        "location, summing the contributions at a student breathing height of 1.5 m. "
+        "The resulting fields displayed the spatial structure predicted by "
+        "advection-diffusion physics (Figure 1). Concentration was highest "
+        "immediately downwind of dense tree clusters and fell off as a bell-shaped "
+        "curve to either side of the plume centerline; stronger modeled winds "
+        "elongated and diluted the plumes, while more stable atmospheric conditions "
+        "confined them into narrow, concentrated bands. These patterns match the "
+        "behavior the Gaussian plume solution predicts.")
 
     para(doc,
         "Because pollen grains differ in size and density, we compared modeled "
@@ -41,32 +55,40 @@ def add_results(doc, heading, para, title_line):
 
     para(doc,
         "Pollen emission is strongly seasonal, so we modulated each source by a "
-        "species-specific temporal gate function (Figure 3). Using a fixed annual "
+        "species-specific temporal gate function (Figure 3). Most campus genera "
+        "bloom in late winter through spring, but cedar pollinates in the fall, so "
+        "the model produces a dominant spring peak driven by oaks and a distinct "
+        "secondary autumn peak on the Gunn campus. Using a fixed annual "
         "concentration scale (500 grains/m^3 defined as the spring peak) to enable "
-        "seasonal comparison, the modeled maximum concentration was 273 grains/m^3 "
-        "on April 1 (day 91), with eight species actively emitting; 30 grains/m^3 "
-        "on June 25 (day 176), when only Pine remained weakly active; and "
-        "effectively zero in mid-January, when all species were dormant. Summer "
-        "concentrations were therefore approximately 6% of the spring peak, "
-        "quantifying how strongly exposure depends on the time of year.")
+        "seasonal comparison, the modeled spring maximum reached several hundred "
+        "grains/m^3 with multiple species actively emitting, fell to a low "
+        "background in early summer once the oaks finished, and dropped to "
+        "effectively zero in mid-winter when all species were dormant. This "
+        "quantifies how strongly exposure depends on the time of year.")
 
     para(doc,
-        "We also incorporated relative humidity, which suppresses pollen emission as "
-        "anthers require drying to release grains and increases grain settling "
-        "through hygroscopic swelling (Figure 4). Under the modeled humidity "
-        "response, emission dropped to as little as 10% of its dry-air value at 90% "
-        "relative humidity, consistent with the common observation that pollen loads "
-        "are lowest during humid marine-layer mornings and highest on dry "
-        "afternoons.")
+        "The current model is driven by wind speed, wind direction, and atmospheric "
+        "stability class. We retrieve relative humidity and temperature from the "
+        "weather service and display them, but they do not yet enter the dispersion "
+        "calculation (temperature only informs the stability-class estimate). "
+        "Because humidity is known to strongly modulate real pollen loads, we "
+        "designed, but have not yet implemented, a humidity coupling in which "
+        "emission is suppressed at high relative humidity (anthers require drying to "
+        "release grains), hygroscopic swelling increases grain settling, and "
+        "rainfall scavenges airborne pollen (Figure 4); the qualitative form of "
+        "these responses is shown for reference. Implementing and validating this "
+        "coupling against measured pollen and weather data is planned future work.")
 
     para(doc,
-        "Finally, the complete concentration field over the campus showed four "
-        "consistent features: plume elongation along the prevailing wind, near-zero "
-        "concentration over building footprints (where outdoor air is excluded), "
-        "enhanced accumulation in the low-wind wake zones behind buildings, and "
-        "elevated concentrations in oak-dense corridors. Each full-campus field was "
-        "computed in under 500 ms on a standard server, fast enough for interactive, "
-        "real-time use.")
+        "Finally, the complete concentration field over each campus showed "
+        "consistent features: plumes bending along the potential-flow streamlines as "
+        "the wind was diverted around buildings, near-zero concentration over "
+        "building footprints (where outdoor air is excluded), locally elevated "
+        "concentration where the flow was channeled between closely spaced "
+        "buildings, and elevated concentrations in oak-dense corridors. Each "
+        "full-campus field was computed in a few seconds on a standard server (well "
+        "under one second for Gunn), fast enough for interactive, real-time use even "
+        "with the thousands of sources on the Stanford campus.")
     para(doc, "")
 
     # ---------------- Discussion ----------------
@@ -76,13 +98,14 @@ def add_results(doc, heading, para, title_line):
         "Our results support the hypothesis that the pollen exposure experienced "
         "while walking across a campus can be predicted at meter scale from the "
         "physics of atmospheric transport, rather than requiring a dense network of "
-        "physical sensors. By modeling each of 1,018 detected trees as a Gaussian "
-        "plume source, the system reproduced the concentration gradients that "
-        "regional, city-scale monitoring inherently averages away: sharp downwind "
-        "plumes, species-dependent hot spots, building exclusion zones, and wake "
-        "accumulation. The sub-second computation time makes the approach practical "
-        "as an interactive tool that a student could consult before choosing a route "
-        "to class.")
+        "physical sensors. By modeling each detected tree as a Gaussian plume source "
+        "driven by a potential-flow wind field around the buildings, the system "
+        "reproduced the concentration gradients that regional, city-scale monitoring "
+        "inherently averages away: plumes bending along the flow diverted around "
+        "buildings, species-dependent hot spots, building exclusion zones, and "
+        "channeling between closely spaced structures. The few-second computation "
+        "time makes the approach practical as an interactive tool that a student "
+        "could consult before choosing a route to class.")
 
     para(doc,
         "Several limitations should temper interpretation of these results. First, "
@@ -91,11 +114,12 @@ def add_results(doc, heading, para, title_line):
         "reproduces the qualitative spatial structure predicted by dispersion theory, "
         "but they do not establish quantitative accuracy of the predicted "
         "concentrations. Direct comparison against co-located pollen samplers is the "
-        "essential next step. Second, the model assumes a spatially uniform wind "
-        "field; real airflow is channeled and deflected by buildings in ways that "
-        "would require computational fluid dynamics to capture fully, and our "
-        "Schulman-Scire wake correction is only an empirical approximation. Third, "
-        "species were classified from RGB satellite imagery and a size-based "
+        "essential next step. Second, our two-dimensional potential-flow wind field "
+        "is inviscid: it captures how wind is diverted and channeled around "
+        "buildings but produces no turbulent wake or recirculation zone behind them, "
+        "so pollen trapping in lee zones is not represented; a viscous "
+        "computational-fluid-dynamics treatment would be required to capture that. "
+        "Third, species were classified from RGB satellite imagery and a size-based "
         "heuristic, which is imperfect; hyperspectral imagery or ground surveys would "
         "improve species assignment, which in turn affects emission timing and "
         "potency. Fourth, several physical parameters (base emission rates, potency "
