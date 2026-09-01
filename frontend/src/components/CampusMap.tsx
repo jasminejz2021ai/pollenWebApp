@@ -254,28 +254,6 @@ function AddBuildingHandler({
   return null;
 }
 
-// Derive an oriented rectangle's center, width (m), length (m), and rotation
-// (deg) from its corner lat/lngs. Uses the first edge as the "width" axis.
-function rectFromCorners(
-  corners: [number, number][], baseLat: number,
-): { lat: number; lng: number; width_m: number; length_m: number; angle_deg: number } {
-  const mLat = METERS_PER_DEG_LAT;
-  const mLng = METERS_PER_DEG_LAT * Math.cos((baseLat * Math.PI) / 180);
-  // Convert to local meters
-  const pts = corners.map(([la, ln]) => [ln * mLng, la * mLat] as [number, number]);
-  const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
-  const cy = pts.reduce((s, p) => s + p[1], 0) / pts.length;
-  // Edge 0->1 and 1->2 give the two side vectors
-  const e1x = pts[1][0] - pts[0][0], e1y = pts[1][1] - pts[0][1];
-  const e2x = pts[2][0] - pts[1][0], e2y = pts[2][1] - pts[1][1];
-  const width_m = Math.hypot(e1x, e1y);
-  const length_m = Math.hypot(e2x, e2y);
-  const angle_deg = (Math.atan2(e1y, e1x) * 180) / Math.PI;
-  const clat = cy / mLat;
-  const clng = cx / mLng;
-  return { lat: clat, lng: clng, width_m, length_m, angle_deg };
-}
-
 // Imperative edit layer: edits ONE selected building at a time. Draws it as a
 // Leaflet polygon with Geoman drag/resize plus a draggable rotation handle.
 // Editing one shape avoids the churn of managing all buildings at once.
@@ -313,14 +291,16 @@ function BuildingEditLayer({
     const commitShape = () => {
       const latlngs = (poly.getLatLngs()[0] as L.LatLng[]).map(
         (p) => [p.lat, p.lng] as [number, number]);
-      if (latlngs.length >= 4) {
-        const r = rectFromCorners(latlngs.slice(0, 4), b.lat);
-        onChange(i, {
-          lat: r.lat, lng: r.lng,
-          width_m: Math.round(r.width_m),
-          length_m: Math.round(r.length_m),
-          angle_deg: Math.round(r.angle_deg),
-        });
+      if (latlngs.length >= 3) {
+        // Preserve the exact vertices so non-rectangular shapes
+        // (parallelograms, trapezoids, etc.) are kept as-drawn. Close the ring
+        // and store the centroid as the building's lat/lng anchor.
+        const ring = latlngs.slice();
+        const first = ring[0], last = ring[ring.length - 1];
+        if (first[0] !== last[0] || first[1] !== last[1]) ring.push(first);
+        const cLat = latlngs.reduce((s, p) => s + p[0], 0) / latlngs.length;
+        const cLng = latlngs.reduce((s, p) => s + p[1], 0) / latlngs.length;
+        onChange(i, { lat: cLat, lng: cLng, polygon: ring });
       }
       positionHandle();
     };
@@ -666,10 +646,15 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
     const updated = detectedBuildings.map((b, i) => {
       if (i !== index) return b;
       const merged = { ...b, ...patch };
-      const w = merged.width_m ?? 24;
-      const l = merged.length_m ?? 18;
-      const ang = merged.angle_deg ?? 0;
-      merged.polygon = rotatedRect(merged.lat, merged.lng, w, l, ang);
+      // If the caller supplied an explicit polygon (a freeform vertex/shape
+      // edit), keep those exact vertices so parallelograms/trapezoids survive.
+      // Otherwise (width/length/rotation sliders) regenerate a rectangle.
+      if (patch.polygon === undefined) {
+        const w = merged.width_m ?? 24;
+        const l = merged.length_m ?? 18;
+        const ang = merged.angle_deg ?? 0;
+        merged.polygon = rotatedRect(merged.lat, merged.lng, w, l, ang);
+      }
       return merged;
     });
     setDetectedBuildings(updated);
@@ -802,7 +787,7 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
             }}
           >
             {!editingShape && (
-            <Popup minWidth={220} maxWidth={260} autoPan={true} keepInView={true} autoPanPadding={[20, 20]}>
+            <Popup minWidth={220} maxWidth={260} autoPan={true} keepInView={false} autoPanPadding={[40, 40]}>
               <BuildingEditor
                 building={b}
                 index={i}
@@ -847,7 +832,7 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
               }}
             >
               {!movingTrees && (
-              <Popup minWidth={200} maxWidth={240} autoPan={true} keepInView={true} autoPanPadding={[20, 20]}>
+              <Popup minWidth={200} maxWidth={240} autoPan={true} keepInView={false} autoPanPadding={[40, 40]}>
                 <TreeEditor
                   tree={tree}
                   index={i}

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { usePollenData } from './hooks/usePollenData';
 import Header from './components/Header';
 import CampusMap from './components/CampusMap';
+import ErrorBoundary from './components/ErrorBoundary';
 import AdvisoryBanner from './components/AdvisoryBanner';
 import SidePanel from './components/SidePanel';
 import TreeInfoCard from './components/TreeInfoCard';
@@ -84,6 +85,7 @@ export default function App() {
 
       <div className="flex-1 flex overflow-hidden" style={{ height: 'calc(100vh - 60px)' }}>
         <div className="flex-1 relative h-full">
+          <ErrorBoundary fallbackLabel="Map display error">
           <CampusMap
             key={campusKey}
             heatmap={data.heatmap}
@@ -96,6 +98,7 @@ export default function App() {
             onTestToggle={setTestEnabled}
             onTestChange={setTestParams}
           />
+          </ErrorBoundary>
 
           {selectedTree && (
             <div className="absolute top-4 right-4 z-50">
