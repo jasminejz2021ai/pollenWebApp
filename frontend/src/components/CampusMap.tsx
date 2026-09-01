@@ -104,6 +104,7 @@ const SPECIES_INFO: Record<string, { name: string; scientific: string; family: s
   valley_oak: { name: "Valley Oak", scientific: "Quercus lobata", family: "Fagaceae", potency: 4.5 },
   coast_live_oak: { name: "Coast Live Oak", scientific: "Quercus agrifolia", family: "Fagaceae", potency: 4.0 },
   redwood: { name: "Coast Redwood", scientific: "Sequoia sempervirens", family: "Cupressaceae", potency: 2.5 },
+  cedar: { name: "Cedar", scientific: "Cedrus spp.", family: "Pinaceae", potency: 3.0 },
   eucalyptus: { name: "Eucalyptus", scientific: "Eucalyptus spp.", family: "Myrtaceae", potency: 2.0 },
   pine: { name: "Pine", scientific: "Pinus spp.", family: "Pinaceae", potency: 2.0 },
   chinese_elm: { name: "Chinese Elm", scientific: "Ulmus parvifolia", family: "Ulmaceae", potency: 3.0 },
@@ -112,10 +113,10 @@ const SPECIES_INFO: Record<string, { name: string; scientific: string; family: s
   other: { name: "Other / Unknown", scientific: "—", family: "—", potency: 3.0 },
 };
 
-// Species offered in the tree editor dropdown (the six the detector assigns),
-// plus an "Other" catch-all for anything the user wants to reclassify.
+// Species offered in the tree editor dropdown (the genera the detector
+// assigns), plus an "Other" catch-all for anything the user wants to reclassify.
 const SPECIES_OPTIONS: string[] = [
-  'coast_live_oak', 'valley_oak', 'redwood', 'sycamore', 'pine', 'chinese_elm', 'other',
+  'coast_live_oak', 'valley_oak', 'redwood', 'cedar', 'sycamore', 'pine', 'chinese_elm', 'other',
 ];
 
 function HeatmapOverlay({ heatmap, visible, bounds, buildings }: { heatmap: HeatmapResponse | null; visible: boolean; bounds: [[number, number], [number, number]]; buildings: DetectedFeature[] }) {
@@ -816,7 +817,7 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
             valley_oak: '#dc2626', coast_live_oak: '#ef4444', redwood: '#a855f7',
             eucalyptus: '#6b7280', pine: '#f97316', chinese_elm: '#eab308',
             sycamore: '#06b6d4', perennial_grass: '#84cc16', palm: '#ec4899',
-            other: '#22c55e',
+            cedar: '#0d9488', other: '#22c55e',
           };
           const color = speciesColors[tree.species_key || ''] || '#22c55e';
           return (
@@ -852,7 +853,7 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
             valley_oak: '#dc2626', coast_live_oak: '#ef4444', redwood: '#a855f7',
             eucalyptus: '#6b7280', pine: '#f97316', chinese_elm: '#eab308',
             sycamore: '#06b6d4', perennial_grass: '#84cc16', palm: '#ec4899',
-            other: '#22c55e',
+            cedar: '#0d9488', other: '#22c55e',
           };
           const color = speciesColors[tree.species_key || ''] || '#22c55e';
           const icon = L.divIcon({

@@ -297,6 +297,7 @@ Valley Oak & 22 & 1050 & 0.5 & Long (hours) \\
 Coast Live Oak & 20 & 1050 & 0.4 & Long (hours) \\
 Pine & 58 & 550 & 3.1 & Short (minutes) \\
 Redwood & 30 & 800 & 1.0 & Moderate \\
+Cedar & 45 & 560 & 1.5 & Moderate \\
 Chinese Elm & 28 & 1000 & 1.1 & Moderate \\
 Sycamore & 20 & 1020 & 0.4 & Long (hours) \\
 \bottomrule
@@ -440,7 +441,12 @@ The three factors are:
     \begin{equation}
     Q_{base,i} = \rho_i \cdot A_{canopy,i}
     \end{equation}
-    where $\rho_i$ is the species-specific pollen flux density (grains\,s$^{-1}$\,m$^{-2}$) and $A_{canopy,i}$ is the canopy surface area. In our implementation, $Q_{base}$ is assigned per-species from literature values (Table~\ref{tab:emission}).
+    where $\rho_i$ is the species-specific pollen flux density (grains\,s$^{-1}$\,m$^{-2}$) and $A_{canopy,i}$ is the canopy surface area. In our implementation, a per-species reference rate is assigned from literature values (Table~\ref{tab:emission}) and then scaled by the mapped canopy size of each individual tree. Since a canopy's projected area scales with the square of its radius $r_i$, and each tree's radius is estimated during detection (and can be corrected by a reviewer), the per-tree base emission is
+    \begin{equation}
+    Q_{base,i} = Q_{ref,species(i)} \cdot \operatorname{clip}\!\left(\left(\frac{r_i}{r_0}\right)^2,\; 0.1,\; 10\right),
+    \label{eq:area_scaling}
+    \end{equation}
+    where $r_0 = 4$~m is a nominal reference canopy radius and the clip keeps a hand-edited radius from producing physically implausible emission. Thus a large mapped oak emits proportionally more pollen than a small one of the same species.
 
     \item $W_i$ (\textbf{Allergen Potency Weight}, dimensionless, 0--5): A clinical severity index quantifying the allergenic impact of species $i$ relative to other pollen types. This accounts for the fact that equal grain counts of different species produce vastly different immune responses. For instance, Oak pollen ($W = 4.0$--$4.5$) triggers severe rhinitis and asthma at lower concentrations than Pine pollen ($W = 2.0$), whose large grains are less immunologically reactive. The potency weight scales the effective emission to reflect health impact rather than raw grain count:
     \begin{equation}
@@ -472,6 +478,7 @@ Species & $Q_{base}$ (grains/s) & $W$ (potency) \\
 Valley Oak & 550 & 4.5 \\
 Coast Live Oak & 500 & 4.0 \\
 Coast Redwood & 300 & 2.5 \\
+Cedar & 400 & 3.0 \\
 Pine & 400 & 2.0 \\
 Chinese Elm & 350 & 3.0 \\
 Western Sycamore & 400 & 3.5 \\
@@ -481,7 +488,7 @@ Western Sycamore & 400 & 3.5 \\
 
 \subsection{Species Phenological Parameters}
 
-Table~\ref{tab:species} lists the temporal parameters for the six genera identified on campus, derived from Bay Area regional data \citep{bastl2016}.
+Table~\ref{tab:species} lists the temporal parameters for the seven genera modeled on campus, derived from Bay Area regional data \citep{bastl2016}. Most bloom in late winter through spring; Cedar (\emph{Cedrus}) is the notable exception, pollinating in the fall (October--December), so it produces a secondary autumn peak that the other genera do not.
 
 \begin{table}[h]
 \centering
@@ -494,12 +501,20 @@ Species & $t_s$ & $t_e$ & $t_p$ & $\sigma_t$ & $W$ \\
 Valley Oak & 60 & 120 & 95 & 21 & 4.5 \\
 Coast Live Oak & 60 & 120 & 91 & 21 & 4.0 \\
 Redwood & 32 & 91 & 60 & 21 & 2.5 \\
+Cedar & 274 & 335 & 305 & 21 & 3.0 \\
 Pine & 91 & 181 & 135 & 30 & 2.0 \\
 Chinese Elm & 244 & 305 & 274 & 21 & 3.0 \\
 Sycamore & 74 & 121 & 100 & 18 & 3.5 \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\subsection{Generic ``Other'' Species Class}
+\label{sec:other}
+
+Reliable species-level identification from RGB satellite imagery alone is imperfect, and some campus trees belong to genera we do not model individually. We therefore assign each mapped canopy either to one of the modeled genera or to a generic \textbf{Other} class. To keep the labeling faithful to the real campus rather than to imagery color alone, the Gunn species proportions are anchored to the 2009 PAUSD arborist inventory (Section~\ref{sec:results}): oaks and redwood dominate ($\sim$41\% and $\sim$20\% of canopies respectively), with smaller shares of cedar, sycamore, elm, and pine, and the remaining $\sim$22\% (the inventory's long tail of ornamental/non-native genera) assigned to \emph{Other}.
+
+An \emph{Other} tree still emits pollen: rather than being dropped from the dispersion sum, it is assigned a generic moderate-emitter profile---a base rate between that of a strong and a weak emitter, a mid-range potency, and a broad spring pollination window---so that unclassified canopies contribute a plausible background load without overstating the allergenic impact of any particular genus. The generic profile is deliberately conservative; refining an \emph{Other} tree to a specific genus (Section~\ref{sec:hitl}) sharpens both its emission timing and its potency weighting. This design keeps the model honest about classification uncertainty: campus-wide background pollen is driven by the abundant oaks and redwoods, while the \emph{Other} sources contribute a diffuse baseline.
 
 \begin{figure}[H]
 \centering
@@ -545,8 +560,9 @@ convolved with a Gaussian ($\sigma = 4$~px). Local maxima with minimum spacing o
 Rooftops are harder to isolate by color alone than tree canopies, because roofs, pavement, and dry ground occupy overlapping color ranges. We therefore detect buildings with the Segment Anything Model (SAM) \citep{kirillov2023}, a pretrained promptable segmentation network. SAM's automatic mask generator proposes class-agnostic masks over the campus image; we then retain only masks that look like rooftops, using a color test (gray/white or warm red-tile roofs, with vegetation excluded), a building-scale size test, and a compactness test. Because SAM downsamples its input internally, we run it on a grid of overlapping image tiles so that small rooftops are resolved at higher effective resolution, then merge detections with spatial de-duplication. Each retained mask is reduced to a rotated minimum-area rectangle, so angled and non-axis-aligned buildings are represented at their true orientation. SAM inference is run once at cache-generation time and the results are stored; the deployed server never runs the network.
 
 \subsection{Human-in-the-Loop Calibration}
+\label{sec:hitl}
 
-Both tree and building detections undergo iterative refinement: automated detection proposes candidates, a reviewer deletes false positives and adds or reshapes footprints through an interactive map editor (adjusting each building's name, floor count, footprint, and rotation), and the corrected set is persisted to the detection cache that the server serves. For each building the height is taken as (floors $\times$ 3~m), which sets the indoor exclusion volume.
+Both tree and building detections undergo iterative refinement through an interactive map editor: automated detection proposes candidates, and a reviewer corrects them directly on the satellite basemap. For \textbf{trees}, the reviewer can delete false positives (e.g.\ shrubs or shadows mistaken for canopy), relocate a canopy by dragging it to its true position, resize its canopy radius (which rescales that tree's emission via the canopy-area law of Eq.~\eqref{eq:area_scaling}), and reclassify its species---including promoting a generic \emph{Other} tree (Section~\ref{sec:other}) to a specific genus or vice versa. For \textbf{buildings}, the reviewer edits each footprint's name, floor count, position, and shape; footprints are not constrained to axis-aligned rectangles but may be dragged into arbitrary convex quadrilaterals (parallelograms, trapezoids) to match obliquely oriented or non-rectangular rooftops, and rotated freely. Each correction is persisted to the per-campus detection cache that the server serves, so the physical model (emission strengths, indoor exclusion masks, and the potential-flow obstacle field) always reflects the reviewed geometry. For each building the height is taken as (floors $\times$ 3~m), which sets the indoor exclusion volume.
 
 \subsection{Multi-Campus Imagery}
 
@@ -566,10 +582,11 @@ D = \int_\gamma C_{total}(\mathbf{x}(s)) \cdot \frac{ds}{v_w} \approx \sum_k C(\
 Dose is mapped to actionable risk levels: Low ($D < 50$), Moderate ($50$--$200$), High ($200$--$500$), Very High ($>500$~grain$\cdot$s/m$^3$).
 
 \section{Results}
+\label{sec:results}
 
 \subsection{Detection Performance}
 
-On the Gunn campus the detection pipeline maps roughly 1{,}000 trees across six allergenic genera (Coast Live Oak, Coast Redwood, Valley Oak, Pine, Western Sycamore, and Chinese Elm) together with the campus buildings; the exact counts evolve as the set is refined through the interactive editor. On the larger Stanford core, tiled SAM detection identifies on the order of $10^3$ building rooftops and $\sim$$10^4$ tree canopies, giving comprehensive coverage of the full campus. Detection and imagery are cached per campus, so no machine-learning model runs on the live server.
+On the Gunn campus the detection pipeline maps roughly 900 trees, which we label against the seven allergenic genera modeled here (Valley Oak, Coast Live Oak, Coast Redwood, Cedar, Western Sycamore, Pine, and Chinese Elm) plus a generic \emph{Other} class (Section~\ref{sec:other}); the exact counts evolve as the set is refined through the interactive editor. The species proportions are anchored to the 2009 PAUSD arborist inventory of the campus \citep{pausd2009}, which surveyed 455 numbered trees. In that inventory the dominant genera are Valley Oak (116 trees, 25.5\%), Coast Redwood (92, 20.2\%), Coast Live Oak (70, 15.4\%), Cedar (27, 5.9\%), Western Sycamore (21, 4.6\%), and Chinese Elm (20, 4.4\%); all oaks together account for 192 trees (42.2\%). The remaining $\sim$17\% comprises a long tail of ornamental and non-native genera (e.g.\ hawthorn, privet, sweetgum, pepper) that are not individually modeled and are assigned to the \emph{Other} class. On the larger Stanford core, tiled SAM detection identifies on the order of $10^3$ building rooftops and $\sim$$10^4$ tree canopies, giving comprehensive coverage of the full campus. Detection and imagery are cached per campus, so no machine-learning model runs on the live server.
 
 \subsection{Seasonal Concentration}
 
