@@ -109,6 +109,7 @@ const SPECIES_INFO: Record<string, { name: string; scientific: string; family: s
   pine: { name: "Pine", scientific: "Pinus spp.", family: "Pinaceae", potency: 2.0 },
   chinese_elm: { name: "Chinese Elm", scientific: "Ulmus parvifolia", family: "Ulmaceae", potency: 3.0 },
   sycamore: { name: "Western Sycamore", scientific: "Platanus racemosa", family: "Platanaceae", potency: 3.5 },
+  olive: { name: "Olive", scientific: "Olea europaea", family: "Oleaceae", potency: 5.0 },
   perennial_grass: { name: "Turf Grass", scientific: "Poaceae spp.", family: "Poaceae", potency: 4.0 },
   other: { name: "Other / Unknown", scientific: "—", family: "—", potency: 3.0 },
 };
@@ -116,7 +117,7 @@ const SPECIES_INFO: Record<string, { name: string; scientific: string; family: s
 // Species offered in the tree editor dropdown (the genera the detector
 // assigns), plus an "Other" catch-all for anything the user wants to reclassify.
 const SPECIES_OPTIONS: string[] = [
-  'coast_live_oak', 'valley_oak', 'redwood', 'cedar', 'sycamore', 'pine', 'chinese_elm', 'other',
+  'coast_live_oak', 'valley_oak', 'redwood', 'cedar', 'sycamore', 'pine', 'chinese_elm', 'palm', 'olive', 'eucalyptus', 'other',
 ];
 
 function HeatmapOverlay({ heatmap, visible, bounds, buildings }: { heatmap: HeatmapResponse | null; visible: boolean; bounds: [[number, number], [number, number]]; buildings: DetectedFeature[] }) {
@@ -817,7 +818,7 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
             valley_oak: '#166534', coast_live_oak: '#166534', redwood: '#dc2626',
             eucalyptus: '#6b7280', pine: '#f97316', chinese_elm: '#eab308',
             sycamore: '#06b6d4', perennial_grass: '#84cc16', palm: '#ec4899',
-            cedar: '#7c3aed', other: '#86efac',
+            cedar: '#7c3aed', olive: '#a3a300', other: '#86efac',
           };
           const color = speciesColors[tree.species_key || ''] || '#86efac';
           return (
@@ -853,7 +854,7 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
             valley_oak: '#166534', coast_live_oak: '#166534', redwood: '#dc2626',
             eucalyptus: '#6b7280', pine: '#f97316', chinese_elm: '#eab308',
             sycamore: '#06b6d4', perennial_grass: '#84cc16', palm: '#ec4899',
-            cedar: '#7c3aed', other: '#86efac',
+            cedar: '#7c3aed', olive: '#a3a300', other: '#86efac',
           };
           const color = speciesColors[tree.species_key || ''] || '#86efac';
           const icon = L.divIcon({
