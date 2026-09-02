@@ -48,7 +48,60 @@ Existing pollen monitoring relies on regional stations reporting area-averaged c
     \item Masks indoor building volumes from the exposure field.
 \end{enumerate}
 
-The system is deployed on two campuses of contrasting scale and layout: Henry M. Gunn High School (Palo Alto, CA), a 25-hectare campus, and the core of Stanford University; together they contain thousands of individually mapped trees and buildings.
+Among these, the building-resolving wind field is the central methodological contribution of this work. A conventional plume model assumes a single, spatially uniform wind over the whole domain; on an open field this is adequate, but a school campus is a \emph{micro-environment} in which clusters of buildings continuously divert, channel, and locally accelerate the wind that carries pollen between them. Resolving that building-scale flow is what turns a generic plume model into a micro-environment model, and it is the piece we treat first (Section~\ref{sec:windfield}) and quantify with direct simulation (Section~\ref{sec:windresults}). The system is deployed on two campuses of contrasting scale and layout: Henry M. Gunn High School (Palo Alto, CA), a 25-hectare campus, and the core of Stanford University; together they contain thousands of individually mapped trees and buildings.
+
+\section{Modeling the Campus Micro-Environment: A 2D Potential-Flow Wind Field}
+\label{sec:windfield}
+
+\subsection{Why a Uniform Wind Is Not Enough}
+
+The defining feature of a campus is that it is densely built. Between a lecture hall and a gymnasium the wind does not blow in a straight line: it stagnates against windward walls, accelerates around corners, and is squeezed---channeled---into the gaps and corridors that students actually walk through. Because pollen is carried by the wind, these building-scale flow distortions directly reshape where pollen goes. A pollen model that assumes one uniform wind vector for the entire campus cannot, even in principle, represent a plume bending around a building to reach a courtyard on the far side, or pooling in a sheltered, low-wind alley. Capturing this is the motivation for computing an explicit, spatially varying wind field before any pollen is released, and using the \emph{local} wind at each tree to drive that tree's plume.
+
+\subsection{Governing Equations}
+
+We model the horizontal, near-surface wind as an incompressible, irrotational (\emph{potential}) flow. Incompressibility means the flow neither piles up nor thins out ($\nabla\!\cdot\!\mathbf{u}=0$); irrotationality means it carries no ambient spin, so the velocity is the gradient of a single scalar velocity potential $\phi$:
+\begin{equation}
+\mathbf{u} = (u,v) = \nabla \phi = \left(\frac{\partial \phi}{\partial x},\; \frac{\partial \phi}{\partial y}\right).
+\label{eq:potential_def}
+\end{equation}
+Combining these two statements yields \textbf{Laplace's equation} for the potential:
+\begin{equation}
+\nabla^2 \phi = \frac{\partial^2 \phi}{\partial x^2} + \frac{\partial^2 \phi}{\partial y^2} = 0.
+\label{eq:laplace}
+\end{equation}
+The physics enters entirely through the boundary conditions:
+\begin{itemize}
+    \item \textbf{Free stream (domain edge, Dirichlet).} Far from the buildings the wind equals the ambient value reported for the campus. We impose $\phi = u_\infty x + v_\infty y$ on the outer boundary, where $(u_\infty, v_\infty)$ are the components of the ambient wind (converted from meteorological speed and direction).
+    \item \textbf{No penetration on walls (Neumann).} Wind cannot flow through a building. On every building face the velocity component normal to the wall is zero, $\partial \phi/\partial n = 0$. This single condition is what forces the flow to go \emph{around} each footprint rather than through it, and hence produces all of the diversion, stagnation, and channeling behavior.
+\end{itemize}
+
+\subsection{Numerical Solution}
+
+Equation~\eqref{eq:laplace} is solved on the same $120 \times 120$ regular grid used later for the concentration field, covering the full campus ($640\,\text{m} \times 560\,\text{m}$, cell size $\approx 5$~m). Building footprints---detected from satellite imagery and refined by a reviewer (Section~\ref{sec:buildings})---are rasterized onto this grid to mark ``solid'' cells; every other cell is ``fluid.''
+
+We relax the discrete Laplacian to convergence with \textbf{red-black Gauss-Seidel successive over-relaxation (SOR)}. Each fluid cell is updated toward the average of its four neighbors; where a neighbor is a solid (building) cell, that neighbor is replaced by the cell's own value, which enforces the zero-normal-gradient (no-penetration) wall condition exactly. The grid cells are two-colored like a checkerboard and the two colors are updated in sequence, which makes each sweep a true Gauss-Seidel step for which over-relaxation is numerically stable; the over-relaxation factor is set to its theoretical optimum $\omega = 2/\!\left(1 + \sin(\pi/N)\right)$ for an $N$-cell grid, giving rapid convergence (a full campus solve completes in about one second). Once $\phi$ has converged, the velocity field follows from Eq.~\eqref{eq:potential_def} by finite differences, and cells inside buildings are set to zero velocity.
+
+\subsection{Simulated Wind Flow Around Buildings}
+\label{sec:windresults}
+
+Figure~\ref{fig:windflow_ideal} contrasts the conventional uniform-wind assumption with the computed potential-flow field for an idealized cluster of buildings under a 4~m/s westerly wind. The uniform assumption (panel a) is the same vector everywhere. The potential-flow field (panel b) instead shows the wind stagnating (low speed, blue) against the windward faces, accelerating around the corners (high speed, red), and channeling through the gap between the two building rows---a direct, physically grounded picture of how the built environment reorganizes the wind. Figure~\ref{fig:windflow_campus} shows the same computation on the real Henry M. Gunn High School footprints for two ambient wind directions (southwesterly and westerly). The streamlines bend around building clusters and speed up in the narrow passages between them, and the pattern shifts with wind direction, illustrating that the wind field must be recomputed whenever the ambient conditions change.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig_windflow_idealized.png}
+\caption{Wind in a school micro-environment under a 4~m/s westerly ambient wind. (a) The conventional uniform-wind assumption: an identical vector everywhere. (b) The computed 2D potential-flow field (background: wind speed; black curves: streamlines). The wind stagnates against windward faces (blue), accelerates around corners (red), and is channeled through the gaps between buildings---structure that a uniform wind cannot represent. The color scale is clipped at twice the free-stream speed; potential flow is singular at sharp convex corners, so the very highest corner speeds are grid-limited.}
+\label{fig:windflow_ideal}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig_windflow_campus.png}
+\caption{Simulated potential-flow wind field over the real building footprints of Henry M. Gunn High School (4~m/s ambient), for a southwesterly wind (left) and a westerly wind (right). Streamlines (black) divert around building clusters while the flow accelerates (red) in the narrow passages between them and slows (blue) in sheltered zones; the local wind at each tree drives that tree's pollen plume (Section~\ref{sec:coupling}).}
+\label{fig:windflow_campus}
+\end{figure}
+
+\medskip
+\noindent\textbf{Honest limitation.} Potential flow is inviscid: it has no boundary-layer separation, and therefore no turbulent wake or recirculation zone behind a building. It captures how wind is \emph{diverted}, channeled, and accelerated by obstacles, but not the low-velocity, pollen-trapping lee zone immediately downwind of a building, which would require a viscous (e.g.\ RANS/CFD) treatment beyond the scope of a real-time interactive system. It is used here as a computationally cheap, physically motivated approximation to the building-scale wind variation---which is precisely the effect a uniform wind omits entirely.
 
 \section{Atmospheric Dispersion Model}
 
@@ -309,22 +362,10 @@ F & 0.04 & 0.894 & 0.016 & 0.894 \\
 \end{tabular}
 \end{table}
 
-\subsection{2D Potential-Flow Wind Field Around Buildings}
-\label{sec:potentialflow}
+\subsection{Coupling to the Potential-Flow Wind Field}
+\label{sec:coupling}
 
-Rather than treating the wind as spatially uniform, we compute a two-dimensional wind field that deflects and channels around the campus buildings, and use the \emph{local} wind at each tree to drive that tree's plume. We model the horizontal flow as incompressible and irrotational (potential flow), so the velocity is the gradient of a scalar velocity potential $\phi$ satisfying Laplace's equation:
-\begin{equation}
-\nabla^2 \phi = 0, \qquad (u, v) = \left(\frac{\partial \phi}{\partial x}, \frac{\partial \phi}{\partial y}\right).
-\label{eq:laplace}
-\end{equation}
-We impose a uniform free stream $(u_\infty, v_\infty)$ from the ambient wind on the domain boundary (Dirichlet), and a no-penetration condition on building walls, $\partial \phi / \partial n = 0$ (Neumann), which forces the flow to go around rather than through each footprint. Equation~\eqref{eq:laplace} is solved on the same $120 \times 120$ grid used for concentration by successive over-relaxation, with building cells rasterized from the detected footprints (Section~\ref{sec:buildings}). The resulting field speeds up where the flow is squeezed between buildings and slows near windward faces, reproducing the channeling and diversion that a uniform wind cannot.
-
-\medskip
-\noindent\textbf{Honest limitation.} Potential flow is inviscid: it has no boundary-layer separation, and therefore no turbulent wake or recirculation zone behind a building. It captures how wind is \emph{diverted} by obstacles but not the low-velocity, pollen-trapping lee zone, which would require a viscous (e.g.\ RANS/CFD) treatment beyond the scope of a real-time system. It is used here as a computationally cheap, physically motivated approximation to spatial wind variation.
-
-\subsection{Coupling to the Gaussian Plume}
-
-The potential-flow field supplies the wind; the Gaussian plume (Eq.~\eqref{eq:plume}) supplies the dispersion. For each source $i$ at location $(x_i, y_i)$, we sample the local wind $(u_i, v_i)$ from the field at that cell and convert it to a local speed $U_i = \sqrt{u_i^2 + v_i^2}$ and direction $\theta_i$. The plume for source $i$ is then evaluated with $(U_i, \theta_i)$ in place of a single campus-wide wind, so plumes bend and stretch according to the flow around nearby buildings. (For comparison, the system also retains a simpler uniform-wind mode with empirical building-downwash corrections, but the potential-flow coupling above is the default.)
+The potential-flow field of Section~\ref{sec:windfield} supplies the wind; the Gaussian plume (Eq.~\eqref{eq:plume}) supplies the dispersion. For each source $i$ at location $(x_i, y_i)$, we sample the local wind $(u_i, v_i)$ from the converged field at that cell and convert it to a local speed $U_i = \sqrt{u_i^2 + v_i^2}$ and direction $\theta_i$. The plume for source $i$ is then evaluated with $(U_i, \theta_i)$ in place of a single campus-wide wind, so each plume bends and stretches according to the flow around its nearby buildings (Figs.~\ref{fig:windflow_ideal}--\ref{fig:windflow_campus}). This is the mechanism by which the building-scale wind structure propagates into the pollen field: a tree in a channeled, high-speed gap produces a stretched, dilute plume, while a tree in a sheltered, low-speed pocket produces a compact, concentrated one. (For comparison, the system also retains a simpler uniform-wind mode with empirical building-downwash corrections, but the potential-flow coupling above is the default.)
 
 \subsection{Multi-Source Superposition}
 

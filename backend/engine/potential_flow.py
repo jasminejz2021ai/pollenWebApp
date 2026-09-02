@@ -23,7 +23,7 @@ import numpy as np
 
 
 def solve_potential_flow(building_mask: np.ndarray, u_inf: float, v_inf: float,
-                         iterations: int = 400, tol: float = 1e-4):
+                         iterations: int = 4000, tol: float = 1e-6):
     """Solve 2D potential flow around obstacles on a regular grid.
 
     building_mask: 2D bool array, True where a building blocks flow.
@@ -33,9 +33,17 @@ def solve_potential_flow(building_mask: np.ndarray, u_inf: float, v_inf: float,
         inside buildings are set to 0.
 
     Method: seed phi with the uniform-flow potential phi0 = u_inf*x + v_inf*y,
-    then relax Laplace's equation (Gauss-Seidel over-relaxation) holding the
-    boundary at the uniform-flow values and enforcing zero normal gradient on
-    building faces (no penetration). Velocity is the gradient of phi.
+    then relax Laplace's equation to convergence holding the domain boundary at
+    the uniform-flow values (Dirichlet) and enforcing zero normal gradient on
+    building faces (no penetration / Neumann). Velocity is the gradient of phi.
+
+    The relaxation uses RED-BLACK Gauss-Seidel with successive over-relaxation
+    (SOR). Red-black ordering is essential: a plain Jacobi sweep (updating every
+    cell from the previous iterate) is only stable for omega <= 1, so applying
+    SOR over-relaxation (omega > 1) to a Jacobi sweep slowly diverges and blows
+    up at obstacle corners. Updating the two colours in sequence makes the sweep
+    a true Gauss-Seidel step, for which SOR is stable and rapidly convergent for
+    0 < omega < 2.
     """
     ny, nx = building_mask.shape
     # Grid coordinates (unit spacing; gradients are per-cell, rescaled later).
@@ -50,38 +58,40 @@ def solve_potential_flow(building_mask: np.ndarray, u_inf: float, v_inf: float,
     solid = building_mask
     fluid = ~solid
 
-    # SOR relaxation of Laplace on fluid cells.
-    omega = 1.7
-    for it in range(iterations):
-        phi_old = phi.copy()
-        # 4-neighbour average; handle solid neighbours with a no-penetration
-        # (reflective) rule: a solid neighbour contributes the current cell's
-        # own value, i.e. zero normal gradient across the wall.
+    # Interior fluid cells only (domain boundary is Dirichlet and never updated).
+    boundary = np.zeros((ny, nx), dtype=bool)
+    boundary[0, :] = boundary[-1, :] = boundary[:, 0] = boundary[:, -1] = True
+    interior = fluid & ~boundary
+
+    ii, jj = np.meshgrid(np.arange(ny), np.arange(nx), indexing="ij")
+    checker = (ii + jj) % 2
+    red = interior & (checker == 0)
+    black = interior & (checker == 1)
+
+    # Optimal SOR factor for a Laplacian on an ~N x N grid.
+    n_char = max(nx, ny)
+    omega = 2.0 / (1.0 + np.sin(np.pi / n_char))
+
+    def _sweep(cells):
+        # 4-neighbour average with a no-penetration (reflective) rule: a solid
+        # neighbour contributes the centre value, i.e. zero normal gradient.
         up = np.roll(phi, -1, axis=0)
         down = np.roll(phi, 1, axis=0)
         left = np.roll(phi, 1, axis=1)
         right = np.roll(phi, -1, axis=1)
-
-        # Where a neighbour is solid, replace it with the center value (Neumann).
         up = np.where(np.roll(solid, -1, axis=0), phi, up)
         down = np.where(np.roll(solid, 1, axis=0), phi, down)
         left = np.where(np.roll(solid, 1, axis=1), phi, left)
         right = np.where(np.roll(solid, -1, axis=1), phi, right)
-
         new = 0.25 * (up + down + left + right)
-        phi_new = (1 - omega) * phi + omega * new
+        phi[cells] = (1 - omega) * phi[cells] + omega * new[cells]
 
-        # Keep domain boundary at the uniform-flow potential (Dirichlet).
-        phi_new[0, :] = phi0[0, :]
-        phi_new[-1, :] = phi0[-1, :]
-        phi_new[:, 0] = phi0[:, 0]
-        phi_new[:, -1] = phi0[:, -1]
-        # Solid cells carry no meaningful potential; freeze them to neighbours.
-        phi_new[solid] = phi[solid]
-
-        phi = phi_new
-        if it % 20 == 0:
-            change = np.max(np.abs(phi - phi_old)[fluid]) if fluid.any() else 0.0
+    for it in range(iterations):
+        phi_old = phi.copy()
+        _sweep(red)     # update red cells using current (black) values
+        _sweep(black)   # then black cells using freshly-updated red values
+        if it % 25 == 0:
+            change = np.max(np.abs(phi - phi_old)[interior]) if interior.any() else 0.0
             if change < tol:
                 break
 

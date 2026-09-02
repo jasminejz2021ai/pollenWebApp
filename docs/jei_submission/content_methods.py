@@ -6,6 +6,32 @@ import os
 def add_methods(doc, docs_dir, heading, para, title_line):
     heading(doc, "MATERIALS AND METHODS")
 
+    para(doc, "Micro-environment wind field", italic=True)
+    para(doc,
+        "The central methodological choice in this work is to resolve the "
+        "building-scale wind field before dispersing any pollen, because a school "
+        "campus is a micro-environment in which clusters of buildings continuously "
+        "divert, channel, and locally accelerate the wind that carries pollen "
+        "between them. A single uniform wind vector cannot represent a plume bending "
+        "around a building or pooling in a sheltered alley. We therefore modeled the "
+        "horizontal near-surface wind as an incompressible, irrotational (potential) "
+        "flow, so the velocity is the gradient of a scalar potential phi that "
+        "satisfies Laplace's equation, del^2 phi = 0. The ambient wind was imposed "
+        "on the domain boundary (phi = u_inf x + v_inf y), and a no-penetration "
+        "condition (zero normal velocity, d phi/dn = 0) was applied on every "
+        "detected building face, which forces the flow to go around rather than "
+        "through each footprint. Laplace's equation was solved on the same 120 x 120 "
+        "grid used for concentration (covering the full campus, cell size about 5 m) "
+        "by red-black Gauss-Seidel successive over-relaxation; red-black ordering is "
+        "required for the over-relaxation to remain numerically stable, and the "
+        "relaxation factor was set to its theoretical optimum, so a full-campus solve "
+        "converges in about one second. The resulting field stagnates against "
+        "windward walls, accelerates around corners, and is channeled through the "
+        "gaps between buildings (Figures 5 and 6). Because potential flow is "
+        "inviscid, it captures this diversion and channeling but not the turbulent "
+        "wake or recirculation behind a building; that lee-side pollen trapping would "
+        "require a viscous (CFD) treatment and is left to future work.")
+
     para(doc, "Atmospheric dispersion model", italic=True)
     para(doc,
         "Pollen transport was modeled with the steady-state solution of the "
@@ -26,13 +52,10 @@ def add_methods(doc, docs_dir, heading, para, title_line):
         "stability classes A-F (Table 1). Stability was estimated from wind speed "
         "and cloud cover using Turner's method (5). Species-dependent gravitational "
         "settling was included via Stokes' law, tilting the plume centerline "
-        "downward with distance. Rather than assuming a spatially uniform wind, we "
-        "first solved a two-dimensional potential-flow wind field on the same grid "
-        "by treating the horizontal flow as incompressible and irrotational "
-        "(Laplace's equation) with the detected building footprints as "
-        "no-penetration obstacles; this deflects and channels the ambient wind "
-        "around buildings. Each tree's plume was then driven by the local wind "
-        "sampled at its own grid cell, so plumes bend and stretch with the flow. "
+        "downward with distance. Rather than assuming a spatially uniform wind, each "
+        "tree's plume was driven by the local wind sampled at its own grid cell from "
+        "the potential-flow field described above, so plumes bend and stretch with "
+        "the flow around nearby buildings. "
         "Because the governing equation is linear, the total field from all N "
         "sources was obtained by superposition, C_total = sum of C_i, evaluated with "
         "vectorized array operations over a 120 x 120 spatial grid. Concentration "
@@ -182,6 +205,21 @@ def add_methods(doc, docs_dir, heading, para, title_line):
          "sharply above 50% relative humidity. (b) Hygroscopic swelling increases "
          "grain diameter at high humidity. (c) Resulting increase in gravitational "
          "settling velocity."),
+        ("fig_windflow_idealized.png",
+         "Figure 5. Wind in a school micro-environment under a 4 m/s westerly "
+         "ambient wind. (a) The conventional uniform-wind assumption: an identical "
+         "vector everywhere. (b) The computed 2D potential-flow field (background: "
+         "wind speed; black curves: streamlines). The wind stagnates against "
+         "windward faces (blue), accelerates around corners (red), and is channeled "
+         "through the gaps between buildings, structure that a uniform wind cannot "
+         "represent. The color scale is clipped at twice the free-stream speed."),
+        ("fig_windflow_campus.png",
+         "Figure 6. Simulated potential-flow wind field over the real building "
+         "footprints of Henry M. Gunn High School (4 m/s ambient), for a "
+         "southwesterly wind (left) and a westerly wind (right). Streamlines divert "
+         "around building clusters while the flow accelerates in the narrow passages "
+         "between them and slows in sheltered zones; the local wind at each tree "
+         "drives that tree's pollen plume."),
     ]
     from docx.shared import Inches
     for fname, caption in figs:
