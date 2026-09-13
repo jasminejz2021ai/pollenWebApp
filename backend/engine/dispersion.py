@@ -2,15 +2,16 @@
 Campus AeroAllergen Mapping (CAM) - Core Dispersion Engine
 
 Implements:
-- Gaussian Plume Model for pollen transport
-- Advection-Diffusion steady-state solutions
-- Building wake/downwash modifications (Schulman-Scire)
+- Straight Gaussian plume (uniform wind)
+- Segmented Gaussian plume along wind-field streamlines (NS / potential flow)
+- Building wake/downwash modifications (Schulman-Scire, uniform-wind mode)
 - Multi-source linear superposition
 - Pasquill-Gifford stability parameters
 """
 
 import numpy as np
 from scipy.special import erf
+from scipy.spatial import cKDTree
 from typing import Tuple, Optional
 
 
@@ -361,28 +362,155 @@ def _wind_speed_dir_from_uv(u: float, v: float):
     return speed, met_from
 
 
+def _sample_uv(x, y, u_field, v_field, grid_extent_x, grid_extent_y):
+    """Bilinear sample of (u, v) at a point in local meters."""
+    ny, nx = u_field.shape
+    fx = (x + grid_extent_x) / (2.0 * grid_extent_x) * (nx - 1)
+    fy = (y + grid_extent_y) / (2.0 * grid_extent_y) * (ny - 1)
+    if not (np.isfinite(fx) and np.isfinite(fy)):
+        return 0.0, 0.0
+    if fx < 0 or fy < 0 or fx > nx - 1 or fy > ny - 1:
+        return 0.0, 0.0
+    i0 = int(np.floor(fy)); j0 = int(np.floor(fx))
+    i1 = min(i0 + 1, ny - 1); j1 = min(j0 + 1, nx - 1)
+    ty = fy - i0; tx = fx - j0
+    u = (u_field[i0, j0] * (1 - tx) * (1 - ty) + u_field[i0, j1] * tx * (1 - ty)
+         + u_field[i1, j0] * (1 - tx) * ty + u_field[i1, j1] * tx * ty)
+    v = (v_field[i0, j0] * (1 - tx) * (1 - ty) + v_field[i0, j1] * tx * (1 - ty)
+         + v_field[i1, j0] * (1 - tx) * ty + v_field[i1, j1] * tx * ty)
+    return float(u), float(v)
+
+
+def trace_streamline(
+    sx, sy, u_field, v_field, grid_extent_x, grid_extent_y,
+    ds=5.0, max_s=520.0, min_speed=0.5,
+):
+    """Integrate a wind-field streamline from (sx, sy).
+
+    Returns arrays (x, y, s, U) along the centerline. Stops at the domain
+    edge, after max_s, or if the path re-enters a grid cell (closed eddy).
+    """
+    ny, nx = u_field.shape
+    xs = [float(sx)]; ys = [float(sy)]; ss = [0.0]; Us = []
+    u0, v0 = _sample_uv(sx, sy, u_field, v_field, grid_extent_x, grid_extent_y)
+    U0 = max(float(np.hypot(u0, v0)), min_speed)
+    Us.append(U0)
+
+    def to_cell(x, y):
+        gx = int(round((x + grid_extent_x) / (2.0 * grid_extent_x) * (nx - 1)))
+        gy = int(round((y + grid_extent_y) / (2.0 * grid_extent_y) * (ny - 1)))
+        return (min(max(gy, 0), ny - 1), min(max(gx, 0), nx - 1))
+
+    first_s = {to_cell(sx, sy): 0.0}
+    x, y = float(sx), float(sy)
+    s = 0.0
+    last_u, last_v = u0, v0
+    while s < max_s:
+        u, v = _sample_uv(x, y, u_field, v_field, grid_extent_x, grid_extent_y)
+        spd = float(np.hypot(u, v))
+        if spd < min_speed:
+            if float(np.hypot(last_u, last_v)) < 1e-9:
+                break
+            u, v = last_u, last_v
+            spd = max(float(np.hypot(u, v)), min_speed)
+        last_u, last_v = u, v
+        x += (u / spd) * ds
+        y += (v / spd) * ds
+        s += ds
+        if abs(x) > grid_extent_x or abs(y) > grid_extent_y:
+            break
+        cell = to_cell(x, y)
+        prev = first_s.get(cell)
+        if prev is not None and (s - prev) > 2.5 * ds:
+            break  # true closed eddy; ignore same-cell rounding on consecutive steps
+        if prev is None:
+            first_s[cell] = s
+        xs.append(x); ys.append(y); ss.append(s); Us.append(spd)
+    return (np.asarray(xs), np.asarray(ys), np.asarray(ss), np.asarray(Us))
+
+
+def gaussian_segmented_plume(
+    x_grid, y_grid, sx, sy, emission_rate,
+    u_field, v_field, grid_extent_x, grid_extent_y,
+    source_height=6.0, receptor_height=1.5, stability_class="D",
+    min_speed=0.5,
+):
+    """Gaussian segmented plume: centerline follows the (u,v) streamline.
+
+    The classical straight-axis Gaussian uses one (U, θ) from the source and
+    cannot bend around buildings or into a wake. Here the plume axis is the
+    NS (or potential-flow) streamline. At each receptor the nearest centerline
+    point supplies the along-path distance s (used as x' for Pasquill-Gifford
+    σ) and the local speed U; the perpendicular distance to the path is y'.
+    """
+    px, py, ps, pU = trace_streamline(
+        sx, sy, u_field, v_field, grid_extent_x, grid_extent_y,
+        min_speed=min_speed,
+    )
+    concentration = np.zeros_like(x_grid, dtype=float)
+    if px.size < 2:
+        u, v = _sample_uv(sx, sy, u_field, v_field, grid_extent_x, grid_extent_y)
+        speed, wind_dir = _wind_speed_dir_from_uv(u, v)
+        if speed < min_speed:
+            speed = min_speed
+        return gaussian_plume(
+            x_grid, y_grid, sx, sy, emission_rate, speed, wind_dir,
+            source_height, receptor_height, stability_class,
+        )
+
+    # Nearest point on the polyline. Only receptors near the path can have
+    # non-negligible concentration (Pasquill-Gifford σ_y at 500 m, class D,
+    # is ~20 m; a 90 m band is conservative).
+    gx = x_grid.ravel(); gy = y_grid.ravel()
+    pad = 90.0
+    near = (
+        (gx >= px.min() - pad) & (gx <= px.max() + pad)
+        & (gy >= py.min() - pad) & (gy <= py.max() + pad)
+    )
+    if not np.any(near):
+        return concentration
+    idx = np.where(near)[0]
+    gx = gx[idx]; gy = gy[idx]
+    # Nearest centerline vertex (ds ≈ 5 m, so this is within half a segment
+    # of the true foot of the perpendicular — small vs. σ_y).
+    _, j = cKDTree(np.column_stack([px, py])).query(np.column_stack([gx, gy]))
+    s_hit = ps[j]
+    n_hit = np.hypot(gx - px[j], gy - py[j])
+    U_hit = np.maximum(pU[j], min_speed)
+
+    # Only downwind of the source, and ignore the first metre (singular).
+    valid = s_hit > 1.0
+    if not np.any(valid):
+        return concentration
+
+    sigma_y, sigma_z = dispersion_sigmas(s_hit[valid], stability_class)
+    z = receptor_height
+    H = source_height
+    lateral = np.exp(-0.5 * (n_hit[valid] ** 2) / (sigma_y ** 2))
+    vertical = np.exp(-0.5 * ((z - H) ** 2) / (sigma_z ** 2)) + np.exp(
+        -0.5 * ((z + H) ** 2) / (sigma_z ** 2)
+    )
+    denom = 2.0 * np.pi * U_hit[valid] * sigma_y * sigma_z
+    vals = (emission_rate / denom) * lateral * vertical
+
+    out = concentration.ravel()
+    out[idx[valid]] = vals
+    return out.reshape(x_grid.shape)
+
+
 def superpose_sources_varwind(
     x_grid, y_grid, flora_matrix, u_field, v_field,
     grid_extent_x, grid_extent_y, current_day,
     stability_class="D", receptor_height=1.5, min_speed=0.5,
 ):
-    """Superpose plumes using a spatially-varying wind field.
+    """Superpose segmented Gaussian plumes on a spatially-varying wind field.
 
-    For each source, the local wind (sampled from u_field/v_field at the
-    source's grid cell) orients and scales its Gaussian plume, so plumes follow
-    the flow diverted around buildings. This is the potential-flow coupling:
-    the wind field already encodes deflection around obstacles.
+    Each tree's plume axis is the streamline of (u_field, v_field) starting at
+    that tree, so the plume bends with Navier-Stokes channeling and can feed a
+    lee-side eddy. This replaces the older source-local straight-axis coupling,
+    which could not follow curved or recirculating flow.
     """
     total = np.zeros_like(x_grid, dtype=float)
-    ny, nx = u_field.shape
-
-    def to_cell(sx, sy):
-        # Map local meters to grid indices.
-        gx = int(round((sx + grid_extent_x) / (2 * grid_extent_x) * (nx - 1)))
-        gy = int(round((sy + grid_extent_y) / (2 * grid_extent_y) * (ny - 1)))
-        gx = min(max(gx, 0), nx - 1)
-        gy = min(max(gy, 0), ny - 1)
-        return gy, gx
 
     for i in range(flora_matrix.shape[0]):
         sx, sy = flora_matrix[i, 0], flora_matrix[i, 1]
@@ -400,17 +528,10 @@ def superpose_sources_varwind(
         if effective_emission < 0.01:
             continue
 
-        gy, gx = to_cell(sx, sy)
-        lu, lv = float(u_field[gy, gx]), float(v_field[gy, gx])
-        speed, wind_dir = _wind_speed_dir_from_uv(lu, lv)
-        if speed < min_speed:
-            speed = min_speed
-
-        c_i = gaussian_plume(
-            x_grid, y_grid, sx, sy,
-            effective_emission, speed, wind_dir,
-            6.0, receptor_height, stability_class,
+        total += gaussian_segmented_plume(
+            x_grid, y_grid, sx, sy, effective_emission,
+            u_field, v_field, grid_extent_x, grid_extent_y,
+            6.0, receptor_height, stability_class, min_speed,
         )
-        total += c_i
 
     return total

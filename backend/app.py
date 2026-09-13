@@ -17,6 +17,7 @@ from flask_cors import CORS
 
 from engine.dispersion import superpose_sources, superpose_sources_varwind, wind_components
 from engine.potential_flow import solve_potential_flow
+from engine.navier_stokes import solve_navier_stokes_cached
 from engine.phenology import (
     BOTANICAL_CATALOG,
     build_flora_matrix,
@@ -66,11 +67,25 @@ def resolve_receptor_height():
     return max(0.5, min(3.0, h))
 
 
+def resolve_flow_mode():
+    """Read the ?flow= query param.
+
+    ns        (default) — 2D incompressible Navier-Stokes around buildings
+              (stagnation, Venturi channeling, and lee-side eddies).
+    potential — inviscid Laplace / potential flow (fast, no eddies).
+    uniform   — one campus-wide wind + empirical building-downwash.
+    """
+    raw = (request.args.get("flow") or "ns").strip().lower()
+    if raw in ("uniform", "off", "none"):
+        return "uniform"
+    if raw in ("potential", "potential-flow", "laplace"):
+        return "potential"
+    return "ns"
+
+
 def resolve_potential_flow():
-    """Read the ?flow= query param. Defaults to the 2D potential-flow wind
-    field diverted around buildings; pass flow=uniform to opt out (uniform wind
-    + empirical wake model)."""
-    return request.args.get("flow", "potential") != "uniform"
+    """Back-compat wrapper: True unless the caller asked for uniform wind."""
+    return resolve_flow_mode() != "uniform"
 
 
 def resolve_wind(campus, body=None):
@@ -112,7 +127,8 @@ def campus_static_path(campus_key: str, filename: str) -> str:
 
 def compute_concentration_field(campus: dict, wind_data: dict, current_day: int,
                                 receptor_height: float = 1.5,
-                                use_potential_flow: bool = False) -> np.ndarray:
+                                use_potential_flow: bool = False,
+                                flow_mode: str = None) -> np.ndarray:
     """Run the full dispersion simulation for a campus.
 
     Uses SAM-detected trees and SAM-detected building rooftops from the campus
@@ -122,6 +138,8 @@ def compute_concentration_field(campus: dict, wind_data: dict, current_day: int,
     receptor_height is the breathing-zone height (m) at which concentration is
     evaluated (default 1.5 m).
     """
+    if flow_mode is None:
+        flow_mode = "ns" if use_potential_flow else "uniform"
     center_lat = campus["center_lat"]
     center_lon = campus["center_lon"]
     mplat = METERS_PER_DEG_LAT
@@ -187,12 +205,20 @@ def compute_concentration_field(campus: dict, wind_data: dict, current_day: int,
             for b in campus["buildings"]
         ]
 
-    if use_potential_flow and detected_buildings:
-        # Physically-computed 2D potential-flow wind field diverted around the
-        # building footprints, then plumes advected along the local flow.
+    if flow_mode != "uniform" and detected_buildings:
+        # Building-resolving wind field, then a segmented Gaussian plume
+        # whose centerline follows the local streamline from each tree.
+        # Default wind is incompressible Navier-Stokes; flow=potential keeps
+        # the faster inviscid Laplace solve.
         building_mask = _rasterize_buildings(detected_buildings, center_lat, center_lon, mplat, mplon)
         u_inf, v_inf = wind_components(wind_data["speed"], wind_data["direction"])
-        u_field, v_field = solve_potential_flow(building_mask, u_inf, v_inf)
+        if flow_mode == "potential":
+            u_field, v_field = solve_potential_flow(building_mask, u_inf, v_inf)
+        else:
+            dx = 2.0 * GRID_EXTENT_X / (GRID_SIZE - 1)
+            dy = 2.0 * GRID_EXTENT_Y / (GRID_SIZE - 1)
+            u_field, v_field = solve_navier_stokes_cached(
+                building_mask, u_inf, v_inf, dx, dy)
         concentration = superpose_sources_varwind(
             GRID_X, GRID_Y, flora_matrix, u_field, v_field,
             GRID_EXTENT_X, GRID_EXTENT_Y, current_day,
@@ -310,7 +336,7 @@ def get_concentration():
 
     concentration = compute_concentration_field(campus, wind_data, current_day,
                                                 resolve_receptor_height(),
-                                                resolve_potential_flow())
+                                                flow_mode=resolve_flow_mode())
 
     # Downsample for JSON transfer (every 4th point)
     step = max(1, GRID_SIZE // 25)
@@ -339,9 +365,10 @@ def get_heatmap():
     current_day = request.args.get("day", day_of_year(), type=int)
     campus = resolve_campus()
     wind_data = resolve_wind(campus)
+    flow_mode = resolve_flow_mode()
     concentration = compute_concentration_field(campus, wind_data, current_day,
                                                 resolve_receptor_height(),
-                                                resolve_potential_flow())
+                                                flow_mode=flow_mode)
 
     center_lat = campus["center_lat"]
     center_lon = campus["center_lon"]
@@ -374,6 +401,7 @@ def get_heatmap():
         "pct_of_peak": round(actual_max / FIXED_MAX_CONCENTRATION * 100, 1),
         "wind": wind_data,
         "active_species": get_active_species(current_day),
+        "flow_model": flow_mode,
     })
 
 
@@ -524,7 +552,8 @@ def calculate_path_exposure():
     wind_data = resolve_wind(campus, body)
 
     height = body.get("height", resolve_receptor_height())
-    concentration = compute_concentration_field(campus, wind_data, current_day, height)
+    concentration = compute_concentration_field(campus, wind_data, current_day, height,
+                                                flow_mode=resolve_flow_mode())
     result = path_exposure_dose(path_points, concentration, GRID_X, GRID_Y)
     result["wind"] = wind_data
     result["current_day"] = current_day
@@ -549,7 +578,8 @@ def get_optimal_route():
     wind_data = resolve_wind(campus, body)
 
     height = body.get("height", resolve_receptor_height())
-    concentration = compute_concentration_field(campus, wind_data, current_day, height)
+    concentration = compute_concentration_field(campus, wind_data, current_day, height,
+                                                flow_mode=resolve_flow_mode())
 
     direct_path = [start, end]
     direct_dose = path_exposure_dose(direct_path, concentration, GRID_X, GRID_Y)
@@ -590,7 +620,7 @@ def get_advisory():
 
     concentration = compute_concentration_field(campus, wind_data, current_day,
                                                 resolve_receptor_height(),
-                                                resolve_potential_flow())
+                                                flow_mode=resolve_flow_mode())
 
     # Evaluate all standard paths
     path_advisories = []
