@@ -31,6 +31,14 @@ import numpy as np
 
 from engine.potential_flow import solve_potential_flow
 
+try:  # Exact sparse-direct pressure Poisson (mass conservation). Preferred path.
+    import scipy.sparse as _sp
+    from scipy.sparse.linalg import splu as _splu
+
+    _HAVE_SCIPY = True
+except Exception:  # pragma: no cover - fall back to iterative SOR if unavailable
+    _HAVE_SCIPY = False
+
 
 # Characteristic building width used only to set ν = U L / Re_eff.
 L_REF_M = 20.0
@@ -38,39 +46,58 @@ RE_EFF = 280.0
 
 
 def _apply_velocity_bc(u, v, solid, u_inf, v_inf, sponge=4):
-    """Inflow = free stream (thick sponge), outflow = Neumann, walls = no-slip.
+    """Open-domain BCs classified per face by the free-stream normal component.
 
-    A multi-cell inflow sponge is required: a 1-cell Dirichlet rim is immediately
-    cancelled by the pressure projection, and the campus wind collapses.
+    Each of the four domain faces is one of:
+      * inflow   -> Dirichlet free stream over a multi-cell sponge. A single-cell
+                    Dirichlet rim is cancelled by the pressure projection, so the
+                    inflow requires the thicker sponge.
+      * outflow  -> zero-gradient (Neumann/convective) copy of the interior.
+      * parallel -> free-slip side wall: no penetration (normal velocity = 0)
+                    and zero tangential shear (tangential component copied).
+
+    Pinning a *lateral* wall to the free stream (the previous behaviour when the
+    crosswind component was zero) confined the open channels beside blocked
+    interiors and drove a spurious 2x over-speed rim at the domain edge. Free-slip
+    on the flow-parallel faces removes that artifact. Building cells stay no-slip.
     """
-    # West
-    if u_inf >= 0.0:
+    speed = max(float(np.hypot(u_inf, v_inf)), 1e-9)
+    tol = 1e-3 * speed  # |normal component| below this => face is parallel to flow
+
+    # --- West / East faces (x-normal; normal component is u) ---
+    if u_inf > tol:            # west = inflow, east = outflow
         u[:, :sponge] = u_inf
         v[:, :sponge] = v_inf
-    else:
-        u[:, 0] = u[:, 1]
-        v[:, 0] = v[:, 1]
-    # East
-    if u_inf <= 0.0:
-        u[:, -sponge:] = u_inf
-        v[:, -sponge:] = v_inf
-    else:
         u[:, -1] = u[:, -2]
         v[:, -1] = v[:, -2]
-    # South
-    if v_inf >= 0.0:
+    elif u_inf < -tol:         # east = inflow, west = outflow
+        u[:, -sponge:] = u_inf
+        v[:, -sponge:] = v_inf
+        u[:, 0] = u[:, 1]
+        v[:, 0] = v[:, 1]
+    else:                      # flow parallel to x-faces => free-slip side walls
+        u[:, 0] = 0.0
+        v[:, 0] = v[:, 1]
+        u[:, -1] = 0.0
+        v[:, -1] = v[:, -2]
+
+    # --- South / North faces (y-normal; normal component is v) ---
+    if v_inf > tol:            # south = inflow, north = outflow
         u[:sponge, :] = u_inf
         v[:sponge, :] = v_inf
-    else:
-        u[0, :] = u[1, :]
-        v[0, :] = v[1, :]
-    # North
-    if v_inf <= 0.0:
-        u[-sponge:, :] = u_inf
-        v[-sponge:, :] = v_inf
-    else:
         u[-1, :] = u[-2, :]
         v[-1, :] = v[-2, :]
+    elif v_inf < -tol:         # north = inflow, south = outflow
+        u[-sponge:, :] = u_inf
+        v[-sponge:, :] = v_inf
+        u[0, :] = u[1, :]
+        v[0, :] = v[1, :]
+    else:                      # flow parallel to y-faces => free-slip top/bottom
+        v[0, :] = 0.0
+        u[0, :] = u[1, :]
+        v[-1, :] = 0.0
+        u[-1, :] = u[-2, :]
+
     u[solid] = 0.0
     v[solid] = 0.0
     return u, v
@@ -172,13 +199,92 @@ def _solve_pressure_poisson(rhs, solid, dx, dy, p, iterations=40, tol=2e-4):
     return p
 
 
+# Cache of factorized pressure operators keyed by (mask, shape, dx, dy). The
+# building geometry is fixed within (and usually across) a solve, so we build
+# and LU-factorize the discrete Laplacian once and reuse it every timestep.
+_POISSON_CACHE: dict = {}
+
+
+def _build_pressure_operator(solid, dx, dy):
+    """Factorize the 5-point Laplacian on fluid cells for the pressure Poisson.
+
+    Neumann (zero normal gradient) holds on the domain boundary and on every
+    solid face. The resulting pure-Neumann system is singular (pressure is
+    defined up to a constant), so a tiny diagonal regularization (epsilon*I) is
+    added to make it invertible. Regularizing is preferred over deleting one
+    cell's equation: deletion leaves that cell's divergence uncorrected and
+    produces a localized velocity spike wherever the reference cell happens to
+    sit. Returns an LU factorization plus the fluid index map, cached by
+    geometry.
+    """
+    key = (hash(solid.tobytes()), solid.shape, round(float(dx), 6), round(float(dy), 6))
+    hit = _POISSON_CACHE.get(key)
+    if hit is not None:
+        return hit
+
+    ny, nx = solid.shape
+    fluid = ~solid
+    idx = -np.ones((ny, nx), dtype=np.int64)
+    ids = np.where(fluid.ravel())[0]
+    idx.flat[ids] = np.arange(ids.size)
+    inv_dx2 = 1.0 / (dx * dx)
+    inv_dy2 = 1.0 / (dy * dy)
+
+    fi, fj = np.where(fluid)
+    k = np.arange(ids.size)
+    rows, cols, data = [], [], []
+    diag = np.zeros(ids.size)
+    for di, dj, w in ((0, 1, inv_dx2), (0, -1, inv_dx2), (1, 0, inv_dy2), (-1, 0, inv_dy2)):
+        ii = fi + di
+        jj = fj + dj
+        ok = (ii >= 0) & (ii < ny) & (jj >= 0) & (jj < nx)
+        okf = ok.copy()
+        okf[ok] = fluid[ii[ok], jj[ok]]
+        rows.append(k[okf])
+        cols.append(idx[ii[okf], jj[okf]])
+        data.append(np.full(int(okf.sum()), w))
+        diag[okf] -= w
+    # Tiny diagonal regularization to lift the constant null space without
+    # deleting any equation (which would leave a cell's divergence uncorrected).
+    eps = 1e-8 * (2.0 * inv_dx2 + 2.0 * inv_dy2)
+    diag -= eps
+    rows.append(k)
+    cols.append(k)
+    data.append(diag)
+    R = np.concatenate(rows)
+    C = np.concatenate(cols)
+    D = np.concatenate(data)
+    A = _sp.csc_matrix((D, (R, C)), shape=(ids.size, ids.size))
+    lu = _splu(A)
+    _POISSON_CACHE[key] = (lu, idx, ids)
+    return lu, idx, ids
+
+
+def _project_pressure(u_star, v_star, solid, dx, dy, dt, p_prev):
+    """Solve ∇²p = ∇·u*/dt and return the pressure that makes u divergence-free.
+
+    Uses the exact sparse-direct factorization when SciPy is available; otherwise
+    falls back to (many) red-black SOR sweeps.
+    """
+    rhs = _divergence(u_star, v_star, dx, dy) / max(dt, 1e-6)
+    rhs[solid] = 0.0
+    if _HAVE_SCIPY:
+        lu, idx, ids = _build_pressure_operator(solid, dx, dy)
+        b = rhs.ravel()[ids]
+        x = lu.solve(b)
+        p = np.zeros(idx.shape, dtype=float)
+        p.flat[ids] = x
+        return p
+    return _solve_pressure_poisson(rhs, solid, dx, dy, p_prev, iterations=400)
+
+
 def solve_navier_stokes(
     building_mask: np.ndarray,
     u_inf: float,
     v_inf: float,
     dx: float,
     dy: float,
-    steps: int = 90,
+    steps: int = 150,
     re_eff: float = RE_EFF,
     l_ref: float = L_REF_M,
 ):
@@ -200,10 +306,12 @@ def solve_navier_stokes(
     fluid = ~solid
 
     # Start from potential flow so the irrotational/channeling part is already
-    # present; NS then adds vorticity and the lee eddy. Clip the singular
-    # corner spikes so they cannot violate the CFL condition on step 1.
+    # present; NS then adds vorticity and the lee eddy. The clip is a *safety
+    # net only*: it tames the singular potential-flow corner spikes on step 1 so
+    # they cannot violate the CFL condition. The converged incompressible field
+    # stays well below this limit, so the clip does not sculpt the solution.
     u, v = solve_potential_flow(solid, u_inf, v_inf)
-    lim = 2.2 * speed
+    lim = 6.0 * speed
 
     def _clip(uu, vv):
         mag = np.hypot(uu, vv)
@@ -218,7 +326,7 @@ def solve_navier_stokes(
 
     for _ in range(steps):
         umax = float(np.max(np.hypot(u[fluid], v[fluid]))) if fluid.any() else speed
-        dt = float(min(0.20 * min(dx, dy) / (umax + 1e-6), dt_diff, 0.5))
+        dt = float(min(0.25 * min(dx, dy) / (umax + 1e-6), dt_diff, 0.5))
 
         conv_u = u * _upwind_grad(u, u, dx, axis=1) + v * _upwind_grad(u, v, dy, axis=0)
         conv_v = u * _upwind_grad(v, u, dx, axis=1) + v * _upwind_grad(v, v, dy, axis=0)
@@ -227,22 +335,15 @@ def solve_navier_stokes(
 
         u_star = u + dt * (-conv_u + visc_u)
         v_star = v + dt * (-conv_v + visc_v)
-        u_star, v_star = _clip(u_star, v_star)
         u_star, v_star = _apply_velocity_bc(u_star, v_star, solid, u_inf, v_inf)
 
-        rhs = _divergence(u_star, v_star, dx, dy) / max(dt, 1e-6)
-        rhs[solid] = 0.0
-        p = _solve_pressure_poisson(rhs, solid, dx, dy, p)
-
+        # Exact pressure projection -> divergence-free (mass-conserving) field.
+        p = _project_pressure(u_star, v_star, solid, dx, dy, dt, p)
         dp_dx, dp_dy = _gradient(p, dx, dy, solid)
         u = u_star - dt * dp_dx
         v = v_star - dt * dp_dy
         u, v = _clip(u, v)
         u, v = _apply_velocity_bc(u, v, solid, u_inf, v_inf)
-        # Weak bulk restore so viscosity/projection cannot kill the free stream
-        # while still allowing local wakes to persist.
-        u[fluid] += 0.02 * (u_inf - u[fluid])
-        v[fluid] += 0.02 * (v_inf - v[fluid])
         u[solid] = 0.0
         v[solid] = 0.0
 

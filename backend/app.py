@@ -11,11 +11,11 @@ REST API providing:
 import os
 import json
 import numpy as np
-from datetime import date
+from datetime import date, timedelta
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
-from engine.dispersion import superpose_sources, superpose_sources_varwind, wind_components
+from engine.dispersion import superpose_sources, superpose_sources_varwind, wind_components, trace_streamline
 from engine.potential_flow import solve_potential_flow
 from engine.navier_stokes import solve_navier_stokes_cached
 from engine.phenology import (
@@ -356,6 +356,100 @@ def get_concentration():
     })
 
 
+def _solve_campus_wind(campus, wind_data, flow_mode="ns"):
+    """Return (u_field, v_field, building_mask) for the campus, or (None, None, None)."""
+    center_lat = campus["center_lat"]
+    center_lon = campus["center_lon"]
+    mplat = METERS_PER_DEG_LAT
+    mplon = 111320.0 * np.cos(np.radians(center_lat))
+    cache_path = campus_static_path(campus["key"], "detect_cache.json")
+    detected_buildings = []
+    if os.path.exists(cache_path):
+        with open(cache_path) as f:
+            detected_buildings = json.load(f).get("buildings", [])
+    if not detected_buildings:
+        return None, None, None
+    building_mask = _rasterize_buildings(
+        detected_buildings, center_lat, center_lon, mplat, mplon)
+    u_inf, v_inf = wind_components(wind_data["speed"], wind_data["direction"])
+    if flow_mode == "potential":
+        u_field, v_field = solve_potential_flow(building_mask, u_inf, v_inf)
+    else:
+        dx = 2.0 * GRID_EXTENT_X / (GRID_SIZE - 1)
+        dy = 2.0 * GRID_EXTENT_Y / (GRID_SIZE - 1)
+        u_field, v_field = solve_navier_stokes_cached(
+            building_mask, u_inf, v_inf, dx, dy)
+    return u_field, v_field, building_mask
+
+
+@app.route("/api/wind-field", methods=["GET"])
+def get_wind_field():
+    """Downsampled NS (or potential-flow) velocity field for map visualization.
+
+    Returns quiver arrows and a few streamlines in lat/lng. Query: campus,
+    flow, wind_speed, wind_dir (test-mode overrides).
+    """
+    campus = resolve_campus()
+    wind_data = resolve_wind(campus)
+    flow_mode = resolve_flow_mode()
+    if flow_mode == "uniform":
+        flow_mode = "ns"
+    u_field, v_field, building_mask = _solve_campus_wind(campus, wind_data, flow_mode)
+    if u_field is None:
+        return jsonify({"arrows": [], "streamlines": [], "wind": wind_data, "flow_model": flow_mode})
+
+    center_lat = campus["center_lat"]
+    center_lon = campus["center_lon"]
+    mplat = METERS_PER_DEG_LAT
+    mplon = 111320.0 * np.cos(np.radians(center_lat))
+
+    arrows = []
+    step = max(1, GRID_SIZE // 18)
+    for i in range(step // 2, GRID_SIZE, step):
+        for j in range(step // 2, GRID_SIZE, step):
+            if building_mask is not None and building_mask[i, j]:
+                continue
+            u = float(u_field[i, j]); v = float(v_field[i, j])
+            speed = float(np.hypot(u, v))
+            if speed < 0.2:
+                continue
+            lat = center_lat + GRID_Y[i, j] / mplat
+            lng = center_lon + GRID_X[i, j] / mplon
+            arrows.append({
+                "lat": round(lat, 6), "lng": round(lng, 6),
+                "u": round(u, 3), "v": round(v, 3),
+                "speed": round(speed, 3),
+            })
+
+    streamlines = []
+    seed_step = max(1, GRID_SIZE // 8)
+    for i in range(seed_step // 2, GRID_SIZE, seed_step):
+        for j in range(seed_step // 2, GRID_SIZE, seed_step):
+            if building_mask is not None and building_mask[i, j]:
+                continue
+            sx, sy = float(GRID_X[i, j]), float(GRID_Y[i, j])
+            px, py, _, _ = trace_streamline(
+                sx, sy, u_field, v_field, GRID_EXTENT_X, GRID_EXTENT_Y,
+                ds=8.0, max_s=280.0,
+            )
+            if px.size < 4:
+                continue
+            line = []
+            for x, y in zip(px, py):
+                line.append({
+                    "lat": round(center_lat + y / mplat, 6),
+                    "lng": round(center_lon + x / mplon, 6),
+                })
+            streamlines.append(line)
+
+    return jsonify({
+        "arrows": arrows,
+        "streamlines": streamlines,
+        "wind": wind_data,
+        "flow_model": flow_mode,
+    })
+
+
 @app.route("/api/heatmap", methods=["GET"])
 def get_heatmap():
     """
@@ -522,18 +616,40 @@ def get_weather():
 
 @app.route("/api/pollen-forecast", methods=["GET"])
 def get_pollen_forecast():
-    """Get regional pollen forecast with clinical mappings. Query param: campus"""
-    campus = resolve_campus()
+    """5-day campus bloom outlook from the phenology model (not regional T/G/W UPI).
+
+    Query: campus, days, day (optional Julian-day start, used in test mode).
+    """
     days = request.args.get("days", 5, type=int)
-    forecasts = fetch_pollen_forecast(days=days, lat=campus["center_lat"], lon=campus["center_lon"])
+    days = max(1, min(int(days or 5), 10))
+    start_doy = request.args.get("day", day_of_year(), type=int)
+    today = date.today()
+    start_date = date(today.year, 1, 1) + timedelta(days=int(start_doy) - 1)
 
-    enriched = []
-    for f in forecasts:
-        max_upi = max(f["tree_upi"], f["grass_upi"], f["weed_upi"])
-        clinical = upi_to_clinical_level(max_upi)
-        enriched.append({**f, "clinical": clinical})
+    outlook = []
+    for i in range(days):
+        doy = ((int(start_doy) - 1 + i) % 365) + 1
+        when = start_date + timedelta(days=i)
+        active = get_active_species(doy)
+        names = [s["common_name"] for s in active if s.get("gamma", 0) > 0.05]
+        max_gamma = max((s.get("gamma", 0) for s in active), default=0.0)
+        if max_gamma >= 0.7:
+            intensity = "peak bloom"
+        elif max_gamma >= 0.3:
+            intensity = "active"
+        elif max_gamma > 0:
+            intensity = "waning"
+        else:
+            intensity = "off-season"
+        outlook.append({
+            "date": when.strftime("%b %d"),
+            "active_species": names,
+            "dominant_species": names[0] if names else None,
+            "bloom_index": round(float(max_gamma), 3),
+            "intensity": intensity,
+        })
 
-    return jsonify({"forecasts": enriched})
+    return jsonify({"forecasts": outlook})
 
 
 @app.route("/api/path-exposure", methods=["POST"])

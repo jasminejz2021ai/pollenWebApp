@@ -1,6 +1,6 @@
 import { useEffect, useRef, useMemo, useState, useCallback } from 'react';
 import {
-  MapContainer, ImageOverlay, Polygon, Popup,
+  MapContainer, ImageOverlay, Polygon, Popup, Polyline,
   useMap, useMapEvents, ZoomControl, Tooltip, Marker,
 } from 'react-leaflet';
 import L from 'leaflet';
@@ -8,8 +8,8 @@ import 'leaflet/dist/leaflet.css';
 import '@geoman-io/leaflet-geoman-free';
 import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
 import TestModePanel from './TestModePanel';
-import type { HeatmapResponse, FloraItem, Building, Campus, TestParams } from '../utils/api';
-import { API_BASE } from '../utils/api';
+import type { HeatmapResponse, FloraItem, Building, Campus, TestParams, WindFieldResponse } from '../utils/api';
+import { API_BASE, fetchWindField } from '../utils/api';
 
 interface CampusMapProps {
   heatmap: HeatmapResponse | null;
@@ -187,6 +187,69 @@ function HeatmapOverlay({ heatmap, visible, bounds, buildings }: { heatmap: Heat
     return () => { if (overlayRef.current) { map.removeLayer(overlayRef.current); overlayRef.current = null; } };
   }, [heatmap, visible, map, bounds, buildings]);
   return null;
+}
+
+function speedColor(speed: number, maxSpeed: number): string {
+  const t = Math.max(0, Math.min(1, speed / Math.max(maxSpeed, 0.5)));
+  if (t < 0.5) {
+    const u = t * 2;
+    return `rgb(${Math.round(56 + u * 180)},${Math.round(189 - u * 40)},${Math.round(248 - u * 80)})`;
+  }
+  const u = (t - 0.5) * 2;
+  return `rgb(${Math.round(236)},${Math.round(149 - u * 80)},${Math.round(80 - u * 40)})`;
+}
+
+function windMaxSpeed(field: WindFieldResponse): number {
+  return field.arrows.reduce((m, a) => Math.max(m, a.speed), 1);
+}
+
+function windSpeedGradientCss(maxSpeed: number): string {
+  const stops = [0, 0.25, 0.5, 0.75, 1].map((t) =>
+    `${speedColor(t * maxSpeed, maxSpeed)} ${Math.round(t * 100)}%`);
+  return `linear-gradient(to top, ${stops.join(', ')})`;
+}
+
+function WindFlowOverlay({ field, visible }: { field: WindFieldResponse | null; visible: boolean }) {
+  if (!visible || !field) return null;
+  const maxSpeed = field.arrows.reduce((m, a) => Math.max(m, a.speed), 1);
+  const mLat = METERS_PER_DEG_LAT;
+
+  return (
+    <>
+      {field.streamlines.map((line, i) => (
+        <Polyline
+          key={`sl-${i}`}
+          positions={line.map((p) => [p.lat, p.lng] as [number, number])}
+          pathOptions={{ color: '#38bdf8', weight: 1.4, opacity: 0.7, interactive: false }}
+        />
+      ))}
+      {field.arrows.map((a, i) => {
+        const mLng = mLat * Math.cos((a.lat * Math.PI) / 180);
+        const scale = 14;
+        const dlat = (a.v * scale) / mLat;
+        const dlng = (a.u * scale) / mLng;
+        const end: [number, number] = [a.lat + dlat, a.lng + dlng];
+        const ang = Math.atan2(dlat, dlng);
+        const head = 0.35;
+        const left: [number, number] = [
+          end[0] - (head * scale / mLat) * Math.sin(ang - 0.45),
+          end[1] - (head * scale / mLng) * Math.cos(ang - 0.45),
+        ];
+        const right: [number, number] = [
+          end[0] - (head * scale / mLat) * Math.sin(ang + 0.45),
+          end[1] - (head * scale / mLng) * Math.cos(ang + 0.45),
+        ];
+        const color = speedColor(a.speed, maxSpeed);
+        return (
+          <Polyline
+            key={`ar-${i}`}
+            positions={[[a.lat, a.lng], end, left, end, right]}
+            pathOptions={{ color, weight: 2, opacity: 0.9, interactive: false }}
+          />
+        );
+      })}
+    </>
+  );
 }
 
 // Ensures the ENTIRE satellite image is always visible. It computes the zoom
@@ -525,6 +588,9 @@ function BuildingEditor({
 
 export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSelect, testEnabled, testParams, onTestToggle, onTestChange }: CampusMapProps) {
   const [showHeatmap, setShowHeatmap] = useState(true);
+  const [showWindFlow, setShowWindFlow] = useState(false);
+  const [windField, setWindField] = useState<WindFieldResponse | null>(null);
+  const [windLoading, setWindLoading] = useState(false);
   const [showDetected, setShowDetected] = useState(true);
   const [showBuildings, setShowBuildings] = useState(true);
   const [addingBuilding, setAddingBuilding] = useState(false);
@@ -684,6 +750,23 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
       .catch(() => setDetecting(false));
   }, [campusKey]);
 
+  useEffect(() => {
+    if (!showWindFlow) return;
+    let cancelled = false;
+    setWindLoading(true);
+    fetchWindField(campusKey, testEnabled ? testParams : undefined)
+      .then((data) => {
+        if (!cancelled) setWindField(data);
+      })
+      .catch(() => {
+        if (!cancelled) setWindField(null);
+      })
+      .finally(() => {
+        if (!cancelled) setWindLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [showWindFlow, campusKey, testEnabled, JSON.stringify(testParams)]);
+
   return (
     <div className="w-full h-full flex flex-col" style={{ minHeight: '500px' }}>
       {/* Toolbar (outside the map) */}
@@ -695,6 +778,14 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
           }`}
         >
           {showHeatmap ? 'Hide Heatmap' : 'Show Heatmap'}
+        </button>
+        <button
+          onClick={() => setShowWindFlow((on) => !on)}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+            showWindFlow ? 'bg-sky-600 text-white' : 'bg-slate-100 text-slate-700 border border-slate-200'
+          }`}
+        >
+          {windLoading ? 'Loading wind…' : showWindFlow ? 'Hide Wind Flow' : 'Show Wind Flow'}
         </button>
         <button
           onClick={() => setShowDetected(!showDetected)}
@@ -776,6 +867,7 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
 
         {/* Heatmap overlay */}
         <HeatmapOverlay heatmap={heatmap} visible={showHeatmap} bounds={bounds} buildings={detectedBuildings} />
+        <WindFlowOverlay field={windField} visible={showWindFlow && !windLoading} />
 
         {/* Detected building rooftops (SAM segmentation) */}
         {showBuildings && detectedBuildings.map((b, i) => (
@@ -944,6 +1036,27 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
             Detection
           </button>
         )
+      )}
+
+      {showWindFlow && windField && !windLoading && (
+        <div className="absolute bottom-4 right-16 z-[1000] bg-white/95 backdrop-blur-sm rounded-lg p-3 shadow-lg text-xs">
+          <p className="font-semibold text-slate-700 mb-0.5">Wind speed</p>
+          <p className="text-slate-400 mb-2">m/s · 2D NS arrows</p>
+          <div className="flex gap-2">
+            <div
+              className="w-3.5 h-36 rounded-sm border border-slate-300"
+              style={{ background: windSpeedGradientCss(windMaxSpeed(windField)) }}
+            />
+            <div className="h-36 flex flex-col justify-between text-slate-600 tabular-nums">
+              {[1, 0.75, 0.5, 0.25, 0].map((t) => (
+                <span key={t}>{(windMaxSpeed(windField) * t).toFixed(1)}</span>
+              ))}
+            </div>
+          </div>
+          <p className="text-slate-400 mt-2 leading-snug">
+            Ambient {windField.wind?.speed?.toFixed(1)} m/s from {Math.round(windField.wind?.direction ?? 0)}°
+          </p>
+        </div>
       )}
 
       {/* Heatmap info (collapsible so it doesn't block the map) */}

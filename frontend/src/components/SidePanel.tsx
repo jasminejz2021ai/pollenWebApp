@@ -54,28 +54,31 @@ export default function SidePanel({ forecast, advisory, activeSpecies, weather }
           )}
         </section>
 
-        {/* 5-Day Forecast Section */}
+        {/* 5-Day campus phenology outlook */}
         <section>
           <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wider mb-3">
-            Regional Pollen Forecast
+            Campus Bloom Outlook
           </h3>
           <div className="space-y-2">
-            {forecast.slice(0, 5).map((day, i) => (
-              <div
-                key={i}
-                className="flex items-center justify-between p-2.5 rounded-lg border border-slate-100 bg-slate-50"
-              >
-                <div>
-                  <p className="text-xs font-medium text-slate-700">{day.date}</p>
-                  <p className="text-xs text-slate-500">{day.dominant_species || 'Mixed'}</p>
+            {forecast.slice(0, 5).map((day, i) => {
+              const names = day.active_species?.length
+                ? day.active_species.join(', ')
+                : (day.intensity === 'off-season' ? 'No campus trees in bloom' : '—');
+              return (
+                <div
+                  key={i}
+                  className="flex items-center justify-between gap-2 p-2.5 rounded-lg border border-slate-100 bg-slate-50"
+                >
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-slate-700">{day.date}</p>
+                    <p className="text-xs text-slate-500 truncate">{names}</p>
+                  </div>
+                  <span className="text-xs font-semibold text-slate-600 capitalize flex-shrink-0">
+                    {day.intensity || '—'}
+                  </span>
                 </div>
-                <div className="flex gap-1.5">
-                  <UPIBadge label="T" value={day.tree_upi} />
-                  <UPIBadge label="G" value={day.grass_upi} />
-                  <UPIBadge label="W" value={day.weed_upi} />
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </section>
 
@@ -139,15 +142,6 @@ export default function SidePanel({ forecast, advisory, activeSpecies, weather }
         </section>
       </div>
     </aside>
-  );
-}
-
-function UPIBadge({ label, value }: { label: string; value: number }) {
-  const colors = ['bg-green-100 text-green-700', 'bg-green-100 text-green-700', 'bg-yellow-100 text-yellow-700', 'bg-orange-100 text-orange-700', 'bg-red-100 text-red-700', 'bg-red-200 text-red-800'];
-  return (
-    <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${colors[value] || colors[0]}`}>
-      {label}:{value}
-    </span>
   );
 }
 

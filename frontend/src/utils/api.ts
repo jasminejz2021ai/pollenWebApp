@@ -102,11 +102,10 @@ export interface ClinicalLevel {
 
 export interface PollenForecast {
   date: string;
-  tree_upi: number;
-  grass_upi: number;
-  weed_upi: number;
+  active_species?: string[];
   dominant_species: string | null;
-  clinical: ClinicalLevel;
+  bloom_index?: number;
+  intensity?: string;
 }
 
 export interface PathExposure {
@@ -144,6 +143,26 @@ export async function fetchCampuses(): Promise<{ campuses: Campus[]; default: st
   return res.json();
 }
 
+export interface WindArrow {
+  lat: number;
+  lng: number;
+  u: number;
+  v: number;
+  speed: number;
+}
+
+export interface WindFieldResponse {
+  arrows: WindArrow[];
+  streamlines: Array<Array<{ lat: number; lng: number }>>;
+  wind: WindData;
+  flow_model: string;
+}
+
+export async function fetchWindField(campus?: string, test?: TestParams): Promise<WindFieldResponse> {
+  const res = await fetch(`${API_BASE}/wind-field${q(campus, undefined, test)}`);
+  return res.json();
+}
+
 export async function fetchHeatmap(campus?: string, height?: number, test?: TestParams): Promise<HeatmapResponse> {
   const res = await fetch(`${API_BASE}/heatmap${q(campus, height, test)}`);
   return res.json();
@@ -164,8 +183,8 @@ export async function fetchWeather(campus?: string, test?: TestParams): Promise<
   return res.json();
 }
 
-export async function fetchPollenForecast(campus?: string): Promise<{ forecasts: PollenForecast[] }> {
-  const res = await fetch(`${API_BASE}/pollen-forecast${q(campus)}`);
+export async function fetchPollenForecast(campus?: string, test?: TestParams): Promise<{ forecasts: PollenForecast[] }> {
+  const res = await fetch(`${API_BASE}/pollen-forecast${q(campus, undefined, test)}`);
   return res.json();
 }
 

@@ -26,7 +26,7 @@ export function usePollenData(campus: string, height: number = 1.5, test?: TestP
           fetchFlora(campus),
           fetchBuildings(campus),
           fetchWeather(campus, test),
-          fetchPollenForecast(campus),
+          fetchPollenForecast(campus, test),
           fetchAdvisory(campus, height, test),
         ]);
 
