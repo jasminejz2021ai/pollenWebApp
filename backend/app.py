@@ -10,6 +10,8 @@ REST API providing:
 
 import os
 import json
+import threading
+from collections import OrderedDict
 import numpy as np
 from datetime import date, timedelta
 from flask import Flask, jsonify, request
@@ -17,7 +19,7 @@ from flask_cors import CORS
 
 from engine.dispersion import superpose_sources, superpose_sources_varwind, wind_components, trace_streamline
 from engine.potential_flow import solve_potential_flow
-from engine.navier_stokes import solve_navier_stokes_cached
+from engine.navier_stokes import solve_navier_stokes_cached, load_ns_fields
 from engine.phenology import (
     BOTANICAL_CATALOG,
     build_flora_matrix,
@@ -125,10 +127,53 @@ def campus_static_path(campus_key: str, filename: str) -> str:
     return os.path.join(base, 'static', filename)
 
 
+NS_FIELDS_FILE = "ns_fields.npz"
+
+for _key in CAMPUSES:
+    load_ns_fields(campus_static_path(_key, NS_FIELDS_FILE))
+
+
+# /heatmap and /advisory are requested together on every page load and need the
+# same field; on Render's shared CPU one evaluation takes seconds, so compute it
+# once per condition and let concurrent requests wait for that result.
+_CONC_CACHE: "OrderedDict[tuple, np.ndarray]" = OrderedDict()
+_CONC_LOCKS: dict = {}
+_CONC_GUARD = threading.Lock()
+_CONC_CACHE_SIZE = 32
+
+
 def compute_concentration_field(campus: dict, wind_data: dict, current_day: int,
                                 receptor_height: float = 1.5,
                                 use_potential_flow: bool = False,
                                 flow_mode: str = None) -> np.ndarray:
+    cache_path = campus_static_path(campus["key"], 'detect_cache.json')
+    mtime = os.path.getmtime(cache_path) if os.path.exists(cache_path) else 0.0
+    key = (campus["key"], round(float(wind_data["speed"]), 2),
+           round(float(wind_data["direction"]), 1), wind_data.get("stability_class", "D"),
+           current_day, round(float(receptor_height), 2), use_potential_flow, flow_mode, mtime)
+    with _CONC_GUARD:
+        if key in _CONC_CACHE:
+            _CONC_CACHE.move_to_end(key)
+            return _CONC_CACHE[key].copy()
+        lock = _CONC_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        with _CONC_GUARD:
+            if key in _CONC_CACHE:
+                return _CONC_CACHE[key].copy()
+        field = _compute_concentration_field(campus, wind_data, current_day, receptor_height,
+                                             use_potential_flow, flow_mode)
+        with _CONC_GUARD:
+            _CONC_CACHE[key] = field
+            while len(_CONC_CACHE) > _CONC_CACHE_SIZE:
+                _CONC_CACHE.popitem(last=False)
+            _CONC_LOCKS.pop(key, None)
+    return field.copy()
+
+
+def _compute_concentration_field(campus: dict, wind_data: dict, current_day: int,
+                                 receptor_height: float = 1.5,
+                                 use_potential_flow: bool = False,
+                                 flow_mode: str = None) -> np.ndarray:
     """Run the full dispersion simulation for a campus.
 
     Uses SAM-detected trees and SAM-detected building rooftops from the campus
@@ -320,8 +365,14 @@ def serve_static(filename):
     campus_key = get_campus(request.args.get("campus", DEFAULT_CAMPUS))["key"]
     campus_dir = os.path.join(os.path.dirname(__file__), 'static', campus_key)
     if os.path.exists(os.path.join(campus_dir, filename)):
-        return send_from_directory(campus_dir, filename)
-    return send_from_directory('static', filename)
+        resp = send_from_directory(campus_dir, filename)
+    else:
+        resp = send_from_directory('static', filename)
+    if filename.endswith((".jpg", ".png")):
+        resp.cache_control.public = True
+        resp.cache_control.max_age = 7 * 24 * 3600
+        resp.cache_control.no_cache = None
+    return resp
 
 
 @app.route("/api/concentration", methods=["GET"])

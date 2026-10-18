@@ -27,6 +27,9 @@ Honest limits:
 
 from __future__ import annotations
 
+import hashlib
+import os
+
 import numpy as np
 
 from engine.potential_flow import solve_potential_flow
@@ -360,6 +363,50 @@ def solve_navier_stokes(
 # Direction-binned cache: (mask_hash, dir_bin) -> (u_hat, v_hat) at unit speed.
 # Steady laminar NS at fixed Re is homogeneous in U, so we store u/U and scale.
 _NS_CACHE: dict = {}
+DIR_BIN_DEG = 10.0
+REF_SPEED = 4.0
+
+
+def mask_digest(building_mask: np.ndarray) -> str:
+    """Stable across processes, unlike hash(), so it can key an on-disk cache."""
+    m = np.ascontiguousarray(building_mask, dtype=bool)
+    return hashlib.sha1(m.tobytes() + str(m.shape).encode()).hexdigest()
+
+
+def _bin_id(u_inf: float, v_inf: float, dir_bin_deg: float) -> int:
+    toward = float(np.degrees(np.arctan2(v_inf, u_inf))) % 360.0
+    return int(round(toward / dir_bin_deg)) % int(round(360.0 / dir_bin_deg))
+
+
+def precompute_ns_fields(building_mask, dx, dy, out_path, dir_bin_deg=DIR_BIN_DEG):
+    """Solve every direction bin for one building mask and save them to .npz,
+    so the web server never has to run the NS march inside a request."""
+    n_bins = int(round(360.0 / dir_bin_deg))
+    u_hat = np.zeros((n_bins,) + building_mask.shape, dtype=np.float32)
+    v_hat = np.zeros_like(u_hat)
+    for b in range(n_bins):
+        ang = np.radians(b * dir_bin_deg)
+        u, v = solve_navier_stokes(building_mask, REF_SPEED * np.cos(ang),
+                                   REF_SPEED * np.sin(ang), dx, dy)
+        u_hat[b], v_hat[b] = u / REF_SPEED, v / REF_SPEED
+    np.savez_compressed(out_path, mask_sha1=mask_digest(building_mask),
+                        dir_bin_deg=dir_bin_deg, u_hat=u_hat, v_hat=v_hat)
+
+
+def load_ns_fields(path: str) -> bool:
+    """Seed the in-memory cache from a precomputed .npz. Fields for a mask that
+    no longer matches the buildings are simply never looked up."""
+    if not os.path.exists(path):
+        return False
+    with np.load(path) as data:
+        if float(data["dir_bin_deg"]) != DIR_BIN_DEG:
+            return False
+        digest = str(data["mask_sha1"])
+        u_hat, v_hat = data["u_hat"], data["v_hat"]
+    for b in range(u_hat.shape[0]):
+        key = (digest, b)
+        _NS_CACHE[key] = (u_hat[b].astype(float), v_hat[b].astype(float))
+    return True
 
 
 def solve_navier_stokes_cached(
@@ -368,7 +415,7 @@ def solve_navier_stokes_cached(
     v_inf: float,
     dx: float,
     dy: float,
-    dir_bin_deg: float = 10.0,
+    dir_bin_deg: float = DIR_BIN_DEG,
 ):
     """Cached NS solve. Reuses a previous field for the same obstacles and
     a nearby wind direction, then scales to the requested speed."""
@@ -377,19 +424,18 @@ def solve_navier_stokes_cached(
         z = np.zeros_like(building_mask, dtype=float)
         return z, z
 
-    toward = float(np.degrees(np.arctan2(v_inf, u_inf))) % 360.0
-    bin_id = int(round(toward / dir_bin_deg)) % int(round(360.0 / dir_bin_deg))
-    key = (hash(building_mask.tobytes()), bin_id, building_mask.shape)
+    bin_id = _bin_id(u_inf, v_inf, dir_bin_deg)
+    key = (mask_digest(building_mask), bin_id)
 
     if key in _NS_CACHE:
         u_hat, v_hat = _NS_CACHE[key]
         return u_hat * speed, v_hat * speed
 
-    # Solve at a reference 4 m/s along the binned direction, then scale.
+    # Solve at the reference speed along the binned direction, then scale.
     ang = np.radians(bin_id * dir_bin_deg)
-    u_ref, v_ref = 4.0 * np.cos(ang), 4.0 * np.sin(ang)
+    u_ref, v_ref = REF_SPEED * np.cos(ang), REF_SPEED * np.sin(ang)
     u, v = solve_navier_stokes(building_mask, u_ref, v_ref, dx, dy)
-    u_hat = u / 4.0
-    v_hat = v / 4.0
+    u_hat = u / REF_SPEED
+    v_hat = v / REF_SPEED
     _NS_CACHE[key] = (u_hat, v_hat)
     return u_hat * speed, v_hat * speed

@@ -13,7 +13,9 @@ bind = f"0.0.0.0:{os.environ.get('PORT', '5001')}"
 
 preload_app = True
 
-workers = int(os.environ.get("WEB_CONCURRENCY", "2"))
+# One worker: the wind and concentration caches live in process memory, and a
+# second worker on a fraction of a CPU would only recompute the same fields.
+workers = int(os.environ.get("WEB_CONCURRENCY", "1"))
 threads = int(os.environ.get("GUNICORN_THREADS", "4"))
 worker_class = "gthread"
 
