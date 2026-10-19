@@ -859,7 +859,7 @@ export default function CampusMap({ heatmap, flora, buildings, campus, onTreeSel
 
         {/* Use downloaded satellite image as background instead of tile API */}
         <ImageOverlay
-          url={`${API_BASE}/static/satellite.png?campus=${campusKey}`}
+          url={`${API_BASE}/static/satellite.jpg?campus=${campusKey}`}
           bounds={bounds}
         />
 

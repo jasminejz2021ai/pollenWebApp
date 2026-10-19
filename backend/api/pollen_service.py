@@ -6,6 +6,7 @@ background allergen forecasts (Universal Pollen Index).
 """
 
 import os
+import time
 import requests
 from datetime import date, datetime
 from typing import Dict, List, Optional
@@ -13,6 +14,10 @@ from typing import Dict, List, Optional
 
 CAMPUS_LAT = 37.4027
 CAMPUS_LON = -122.1342
+
+# The Google forecast is daily; an hour of reuse saves a round-trip per request.
+FORECAST_CACHE_TTL_S = 3600
+_FORECAST_CACHE: Dict[tuple, tuple] = {}
 
 
 def fetch_pollen_forecast(api_key: Optional[str] = None, days: int = 5,
@@ -30,6 +35,11 @@ def fetch_pollen_forecast(api_key: Optional[str] = None, days: int = 5,
 
     if not api_key:
         return _mock_pollen_forecast(days)
+
+    key = (round(lat, 4), round(lon, 4), days)
+    hit = _FORECAST_CACHE.get(key)
+    if hit and time.time() - hit[0] < FORECAST_CACHE_TTL_S:
+        return [dict(f) for f in hit[1]]
 
     url = "https://pollen.googleapis.com/v1/forecast:lookup"
     params = {
@@ -76,7 +86,8 @@ def fetch_pollen_forecast(api_key: Optional[str] = None, days: int = 5,
 
             forecasts.append(forecast)
 
-        return forecasts
+        _FORECAST_CACHE[key] = (time.time(), forecasts)
+        return [dict(f) for f in forecasts]
     except (requests.RequestException, KeyError):
         return _mock_pollen_forecast(days)
 

@@ -6,6 +6,7 @@ meteorological measurements into grid-aligned velocity components.
 """
 
 import os
+import time
 import requests
 from datetime import datetime
 from typing import Dict, Optional, Tuple
@@ -13,6 +14,11 @@ from typing import Dict, Optional, Tuple
 # Gunn High School coordinates
 CAMPUS_LAT = 37.4027
 CAMPUS_LON = -122.1342
+
+# One page load asks for the wind from several endpoints; the upstream APIs
+# update roughly every 10-15 minutes, so reuse a live reading for that long.
+WIND_CACHE_TTL_S = 600
+_WIND_CACHE: Dict[Tuple[float, float], Tuple[float, Dict]] = {}
 
 
 def fetch_current_wind(lat: Optional[float] = None, lon: Optional[float] = None,
@@ -29,15 +35,24 @@ def fetch_current_wind(lat: Optional[float] = None, lon: Optional[float] = None,
     if api_key is None:
         api_key = os.environ.get("OPENWEATHER_API_KEY", "")
 
+    key = (round(lat, 4), round(lon, 4))
+    hit = _WIND_CACHE.get(key)
+    if hit and time.time() - hit[0] < WIND_CACHE_TTL_S:
+        return dict(hit[1])
+
+    result = None
     if api_key:
         try:
-            return _fetch_openweathermap(lat, lon, api_key)
+            result = _fetch_openweathermap(lat, lon, api_key)
         except (requests.RequestException, KeyError, ValueError):
             pass
-    try:
-        return _fetch_open_meteo(lat, lon)
-    except (requests.RequestException, KeyError, ValueError):
-        return _mock_wind_data()
+    if result is None:
+        try:
+            result = _fetch_open_meteo(lat, lon)
+        except (requests.RequestException, KeyError, ValueError):
+            return _mock_wind_data()
+    _WIND_CACHE[key] = (time.time(), result)
+    return dict(result)
 
 
 def _fetch_openweathermap(lat: float, lon: float, api_key: str) -> Dict:
